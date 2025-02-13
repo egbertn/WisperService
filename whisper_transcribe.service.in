@@ -1,0 +1,12 @@
+[Unit]
+Description=Voice Transcriber Service using Whisper
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/whisper_transcribe -p 8008 -m small
+Restart=always
+User=@USER@
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target
