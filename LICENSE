@@ -1,8 +1,7 @@
 
-#### 2. **LICENSE**
-Dit bestand bevat de licentie waaronder jouw project wordt vrijgegeven. De keuze van licentie hangt af van hoe je wilt dat anderen je code gebruiken. Enkele populaire opties zijn MIT, Apache 2.0, en GPL.
+---
 
-**Voorbeeldinhoud voor MIT-licentie:**
+### **📜 LICENSE**
 ```plaintext
 MIT License
 
@@ -25,3 +24,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+**If you find this service useful, please consider mentioning the author (Egbert Nierop) in your project or documentation.**  
