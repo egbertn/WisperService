@@ -24,11 +24,13 @@ Ensure the following dependencies are installed:
 - **CMake** (version 3.10 or later)
 - **C++17 or later**
 - **Whisper.cpp** (precompiled with shared libraries)
+   assuming you cloned whisper.cpp and compiled and installed it succesfully 
 - **FFmpeg** (latest version, not limited to 4.4)
   make sure if you compile this yourselves, you include the flags --enable-shared --disable-static
   e.g. 
   ./configure --prefix=/usr/local --enable-gpl --enable-nonfree --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libfdk-aac --enable-libmp3lame --enable-libass --enable-libfreetype --enable-libvorbis --enable-zlib --enable-shared --disable-static --enable-cuda-nvcc
-- **OpenCV 4** (for GPU detection, optional)
+- **CUDA** (optional)
+  if cuda not available you can test but slow
 
 - **CURL** (for model downloading)
 - **Threads** (multi-threading support)
@@ -36,14 +38,14 @@ Ensure the following dependencies are installed:
 On **Ubuntu**, install dependencies with:
 ```sh
 sudo apt update
-sudo apt install cmake g++ libopencv-dev libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libcurl4-openssl-dev
+sudo apt install cmake g++  libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libcurl4-openssl-dev
 ```
 
 ## Installation
 ### Clone and Build
 ```sh
-git clone https://github.com/your-repo/whisper-transcriber.git
-cd whisper-transcriber
+git clone https://github.com/egbertn/WisperService.git
+cd WhisperService
 mkdir build && cd build
 cmake ..
 make -j$(nproc)
@@ -94,9 +96,9 @@ curl -X POST --data-binary @test.webm \
 
 ## Model Management
 ### Downloading a Whisper Model
-Models are **not downloaded automatically**. You must manually download them from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) and place them in `~/.cache/whisper/`.
+Models are **are downloaded automatically**. Models will be downloaded automatically from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) and placed  in `~/.cache/whisper/`.
 
-Example (downloading the small model):
+If you want to download yourself, do so like this e.g.
 ```sh
 mkdir -p ~/.cache/whisper
 wget -O ~/.cache/whisper/ggml-small.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
