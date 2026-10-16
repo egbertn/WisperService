@@ -1,117 +1,276 @@
 # Whisper Transcriber Service
-## Author Egbert Nierop (Nierop Computer Vision, Netherlands)
 
-## Overview
-The **Whisper Transcriber Service** is a C++-based server application that provides speech-to-text transcription using **OpenAI's Whisper model**. Unlike the official Whisper implementation, this project:
+Author: Egbert Nierop (Nierop Computer Vision, Netherlands).
 
-- Uses a **newer version of FFmpeg**, allowing better support for modern audio formats.
-- **Automatically downloads models** using recent lib curl  if not available locally in .cache/whisper using the CURL api
-- Runs as a **system service** on Linux (or as a Windows service).
+A C++17 HTTP service using Whisper.cpp for transcription and FFmpeg for audio
+decoding. Every upload is converted to mono, 16 kHz float PCM before inference.
+One model is loaded at startup, reused across requests, and released on shutdown.
+Requests do not share previous transcription context or prompts.
 
-This project is primarily developed and tested on **Linux** but is compatible with Windows.
+## HTTP API
 
-## Features
-- **Real-time transcription** of audio via an HTTP API.
-- **Supports multiple audio formats** via FFmpeg.
-- **Optimized for GPU acceleration** (CUDA support available).
-- **Supports multiple concurrent transcription requests**.
-- **Configurable language detection and translation** (auto-detect, translate to English, or custom language prompts).
+Send **raw file bytes**, not multipart/form-data:
 
-## Requirements
-### Dependencies
-Ensure the following dependencies are installed:
-
-- **CMake** (version 3.10 or later)
-- **C++17 or later**
-- **Whisper.cpp** (precompiled with shared libraries)
-   assuming you cloned whisper.cpp and compiled and installed it succesfully 
-- **FFmpeg** (latest version, not limited to 4.4)
-  make sure if you compile this yourselves, you include the flags --enable-shared --disable-static
-  e.g. 
-  ./configure --prefix=/usr/local --enable-gpl --enable-nonfree --enable-libx264 --enable-libx265 --enable-libvpx --enable-libopus --enable-libfdk-aac --enable-libmp3lame --enable-libass --enable-libfreetype --enable-libvorbis --enable-zlib --enable-shared --disable-static --enable-cuda-nvcc
-- **CUDA** (optional)
-  if cuda not available you can test but slow
-
-- **CURL** (for model downloading)
-- **Threads** (multi-threading support)
-
-On **Ubuntu**, install dependencies with:
 ```sh
-sudo apt update
-sudo apt install cmake g++  libavformat-dev libavcodec-dev libavutil-dev libswresample-dev libcurl4-openssl-dev
+curl --fail-with-body --data-binary @recording.m4a \
+  -H "Authorization: Bearer $WHISPER_API_KEY" \
+  -H 'Content-Type: application/octet-stream' \
+  'https://api.adccure.nl/?lang=nl&translate=false'
 ```
 
-## Installation
-### Clone and Build
-```sh
-git clone https://github.com/egbertn/WisperService.git
-cd WhisperService
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-sudo make install
+JSON is the default response. This is a breaking change from the original
+plain-text API; add `format=text` to retain a plain-text transcript.
+
+```json
+{
+  "text": " Hallo wereld.",
+  "language": "nl",
+  "task": "transcribe",
+  "model": "small",
+  "processing_seconds": 0.8,
+  "segments": [
+    {
+      "start": 0.0,
+      "end": 1.5,
+      "text": " Hallo wereld.",
+      "no_speech_probability": 0.02
+    }
+  ],
+  "audio": {
+    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+    "codec": "aac",
+    "duration_seconds": 1.5,
+    "original_sample_rate": 48000,
+    "original_channels": 2,
+    "sample_rate": 16000,
+    "channels": 1
+  }
+}
 ```
 
-### Install as a System Service (Linux)
-After installation, enable and start the service:
-```sh
-sudo systemctl enable whisper_transcribe.service
-sudo systemctl start whisper_transcribe.service
+All durations and timestamps are in **seconds**. Duration is calculated from
+decoded, resampled samples, not untrusted container tags. Segment endpoints are
+bounded by the audio duration. `language` describes the source language, including
+when translating to English. `no_speech_probability` is Whisper's segment
+no-speech estimate, **not** a general transcription confidence score.
+Processing time includes decoding and waiting for the model, but not uploading.
+
+| Query parameter | Default | Meaning |
+|---|---|---|
+| `lang` | `auto` | Whisper language code, e.g. `nl`, `en`, or automatic detection |
+| `translate` | `false` | `true` translates speech to English; only `true`/`false` accepted |
+| `hint` | empty | Initial prompt, at most 4096 bytes; URL-encode its contents |
+| `format` | `json` | `json` or `text` |
+
+`GET /health` returns readiness, model and selected device. The HTTP listener only
+starts after the model has loaded.
+
+### Limits and errors
+
+- At most **32 MiB per upload** and **600 seconds of decoded audio**.
+- One inference at a time; at most four admitted requests, including the active
+  request. Overload returns `503` with `Retry-After: 5`.
+- HTTP workers and the underlying connection queue are also bounded. Connections
+  beyond that lower-level queue can be closed without an HTTP response.
+- Read/write timeouts are 30 seconds; these are socket I/O timeouts, not a
+  transcription deadline.
+- Empty uploads/invalid parameters: `400`; oversized/overlong audio: `413`;
+  multipart uploads: `415`; unsupported/corrupt audio: `422`; internal failures:
+  `500`. Errors use JSON even when `format=text`.
+
+```json
+{"error":{"status":422,"message":"Cannot open audio: Invalid data found when processing input"}}
 ```
 
-To check the service status:
+Only the first selected audio stream is transcribed. External media references
+are blocked. Changing sample formats within a single stream is rejected.
+Supported formats depend on the linked FFmpeg decoders and demuxers, not the
+filename extension. The private build below enables WAV/PCM, MP3, AAC/M4A,
+WebM/Opus, Ogg/Vorbis, FLAC, ALAC, AIFF and common WMA variants.
+
+Every transcription request requires `Authorization: Bearer <key>`. The key is
+read from `WHISPER_API_KEY` at startup; the service will not start if it is
+missing or shorter than 32 characters. Keep it in a root-readable server-side
+environment file, never in source control, a URL, or browser code. The service
+does not provide TLS; use HTTPS at a reverse proxy and keep its upstream private.
+`GET /health` remains unauthenticated for readiness checks.
+
+## Dependencies and build
+
+Linux is the supported deployment platform. Requirements:
+
+- CMake 3.18+, C++17 compiler, pkg-config, threads.
+- Whisper.cpp with installed shared libraries and its CMake package. Validated
+  with a local 1.7.6 CPU build and Jetson 1.9.5 CUDA build.
+- FFmpeg development libraries: libavformat/libavcodec 59+,
+  libavutil 57+, libswresample 4+. Validated with FFmpeg 8.
+- libcurl 7.85+ development files and nlohmann-json 3.2+.
+- CUDA toolkit and a CUDA-enabled Whisper backend for GPU inference.
+
+Ubuntu development packages:
+
 ```sh
-sudo systemctl status whisper_transcribe.service
+sudo apt-get install cmake ninja-build g++ pkg-config \
+  libavformat-dev libavcodec-dev libavutil-dev libswresample-dev \
+  libcurl4-openssl-dev nlohmann-json3-dev
 ```
 
-### Windows Installation
-On Windows, the service is installed automatically:
+Use private prefixes on a Jetson with an existing camera pipeline. Do not replace
+the system FFmpeg or reuse the camera application's install directory.
+
+### Isolated NVIDIA FFmpeg build
+
+Obtain the FFmpeg source archive from the NVIDIA Jetson repository matching the
+installed L4T release. The deployment used the existing
+`~/camera-build-deps/ffmpeg_8.0.1-nvidia1.tar.xz` archive, whose Debian changelog
+identifies `7:8.0.1-nvidia1`. The camera install and its source trees are untouched.
+
 ```sh
-sc create WhisperService binPath= C:\whisper_service\whisper_transcribe.exe start= auto
-sc start WhisperService
+bash scripts/build-jetson-ffmpeg.sh \
+  ~/camera-build-deps/ffmpeg_8.0.1-nvidia1.tar.xz \
+  ~/apps/whisper-service/deps/ffmpeg
 ```
 
-## Running the Transcription Service
-You can manually start the server with:
+This extracts a fresh source tree, builds with two jobs and installs shared
+libraries with private runtime paths. It refuses to overwrite an existing prefix
+or build directory. Use a fresh prefix for subsequent builds. NVIDIA video/CUDA
+codecs are unnecessary for audio decoding; CUDA acceleration belongs to Whisper.
+The script keeps GPL/nonfree components disabled and disables FFmpeg networking.
+
+### Existing Jetson Whisper build
+
+Use the existing CUDA build from `~/whisper.cpp`; installing it below does not
+rebuild it or replace its original artifacts:
+
 ```sh
-./whisper_transcribe -p 8007 -m small
-```
-This runs the service on **port 8007** using the **small Whisper model**.
-
-## API Usage
-### Transcription Request
-Send a POST request with an audio file:
-```sh
-curl -X POST --data-binary @test.webm \
-     -H "Content-Type: application/octet-stream" \
-     "http://127.0.0.1:8007/?lang=nl&translate=false"
-```
-
-### Query Parameters
-| Parameter  | Description |
-|------------|------------|
-| `lang`     | Language code (e.g., `nl`, `en`, `auto`) |
-| `translate` | Translate output (`true` for English translation) |
-| `hint`      | Initial prompt for model guidance |
-
-## Model Management
-### Downloading a Whisper Model
-Models are **are downloaded automatically**. Models will be downloaded automatically from [Hugging Face](https://huggingface.co/ggerganov/whisper.cpp) and placed  in `~/.cache/whisper/`.
-
-If you want to download yourself, do so like this e.g.
-```sh
-mkdir -p ~/.cache/whisper
-wget -O ~/.cache/whisper/ggml-small.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+cmake --install ~/whisper.cpp/build \
+  --prefix ~/apps/whisper-service/deps/whisper
 ```
 
-## Development Notes
-- **FFmpeg** integration allows better support for audio formats.
-- **CMake build system** ensures cross-platform compatibility.
-- **Multi-threaded execution** allows efficient transcription handling.
+The validated Jetson build uses `GGML_CUDA=ON`, CUDA 13.2 and
+`CMAKE_CUDA_ARCHITECTURES=87` for Orin. If rebuilding Whisper yourself, select the
+architecture matching your GPU and give it a separate build directory.
 
-## Contributing
-Contributions are welcome! Feel free to submit issues or pull requests.
+### Build this service
+
+```sh
+PKG_CONFIG_PATH="$HOME/apps/whisper-service/deps/ffmpeg/lib/pkgconfig" \
+cmake -S . -B build -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="$HOME/apps/whisper-service/deps/whisper" \
+  -DCMAKE_INSTALL_PREFIX="$HOME/apps/whisper-service"
+cmake --build build --parallel 2
+ctest --test-dir build --output-on-failure
+cmake --install build
+```
+
+Private runtime library paths are embedded in Linux executables, including
+transitive dependencies, so the camera application's libraries are not selected.
+Moving private dependency directories requires reconfiguration and reinstallation.
+
+For a CPU-only build, use a CPU-built Whisper package and configure
+`-DWHISPER_SERVICE_CUDA=OFF`. Merely disabling service CUDA detection does not
+remove dependencies from an already CUDA-built Whisper library.
+
+## Running
+
+```sh
+./build/whisper_transcribe -p 8007 -m small --device cuda --host 192.168.1.190
+```
+
+Options:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `-p`, `--port` | `8007` | Port 1-65535 |
+| `-m`, `--model` | `small` | Model name, e.g. `base`, `small`, `large-v3-turbo` |
+| `--model-file` | empty | Use an existing model file instead of the model cache |
+| `--host` | `127.0.0.1` | Bind address |
+| `--device` | `auto` | `cpu`, `cuda`, or `auto` |
+
+`cuda` fails at startup if the service cannot find both a CUDA device and a
+Whisper CUDA backend. `auto` explicitly logs CPU fallback.
+
+Models are cached in `$HOME/.cache/whisper/ggml-<model>.bin`. Missing models are
+downloaded over HTTPS from the Whisper.cpp Hugging Face repository (tinydiarize
+uses its own repository). Downloads use unique temporary files, check transfer
+success and advertised size, and are atomically renamed. Interrupted download
+files do not become cached models. Downloads have a one-hour total timeout and
+low-speed/connect timeouts. Existing models are validated by Whisper at startup;
+cryptographic model checksum verification is not implemented.
+
+## Systemd installation
+
+Installation **does not automatically enable/start a service**. Configure the
+generated unit explicitly before installing it:
+
+```sh
+cmake -S . -B build \
+  -DSERVICE_USER=egbert \
+  -DSERVICE_HOME=/var/lib/whisper \
+  -DSERVICE_MODEL=small \
+  -DSERVICE_HOST=192.168.1.190 \
+  -DSERVICE_DEVICE=cuda
+cmake --build build --parallel 2
+cmake --install build
+sudo install -m 644 \
+  ~/apps/whisper-service/share/whisper-transcriber/whisper_transcribe.service \
+  /etc/systemd/system/whisper_transcribe.service
+sudo sh -c 'umask 077; printf "WHISPER_API_KEY=%s\n" "$(openssl rand -hex 32)" > /etc/whisper-transcribe.env'
+sudo chown root:root /etc/whisper-transcribe.env
+sudo chmod 600 /etc/whisper-transcribe.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now whisper_transcribe.service
+```
+
+The unit runs unprivileged, creates `/var/lib/whisper` using `StateDirectory`,
+sets `HOME` explicitly, mounts home directories read-only and permits writes to
+its state directory. On a new host, create the configured service user first.
+The required API key is loaded from `/etc/whisper-transcribe.env`, which must
+exist before starting the service and should be readable only by root.
+For a dedicated `whisper` user, install application/dependencies outside a
+private home directory, for example under `/opt/whisper-service`.
+
+The Jetson deployment deliberately uses `egbert` so it can read its private
+application prefix, with the model cache in `/var/lib/whisper/.cache/whisper`.
+The service restarts on failure. SIGINT/SIGTERM stop the listener and request
+Whisper inference cancellation before model cleanup.
+
+```sh
+curl --fail http://192.168.1.190:8007/health
+systemctl status whisper_transcribe.service
+journalctl -u whisper_transcribe.service --no-pager -n 50
+```
+
+## Tests
+
+Unit tests require neither a model nor a GPU. They cover 16/32-bit PCM and float
+WAV, extra header chunks, stereo resampling and tail flushing, corrupt/empty
+uploads, size/duration boundaries, non-finite samples, recovery after errors,
+query validation, JSON escaping/metadata units and safe model paths.
+
+```sh
+ctest --test-dir build --output-on-failure
+```
+
+End-to-end tests require Node.js 18+, a running service and the Whisper.cpp JFK
+sample. Generate fixtures using a separate full FFmpeg installation with
+libmp3lame/libopus/libvorbis encoders; the private service build is decode-focused.
+Generated audio remains in the ignored build directory:
+
+```sh
+bash scripts/make-test-fixtures.sh ../whisper.cpp/samples/jfk.wav build/http-fixtures
+node tests/http_integration.mjs http://192.168.1.190:8007 build/http-fixtures
+```
+
+Set `WHISPER_API_KEY` in the test process environment before running the
+integration suite. It checks missing and invalid keys before exercising
+transcription and response behavior.
+
+The integration suite checks transcription and metadata for nine encodings,
+automatic language detection, translation, legacy text output, HTTP errors,
+upload/duration limits, overload and subsequent request recovery.
 
 ## License
-This project is licensed under the MIT License.
 
+MIT; see [LICENSE](LICENSE). Third-party dependencies retain their own licenses.

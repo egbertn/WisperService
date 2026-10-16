@@ -1,12 +1,23 @@
 [Unit]
 Description=Voice Transcriber Service using Whisper
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/whisper_transcribe -p 8008 -m small
-Restart=always
-User=@USER@
-Group=www-data
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/whisper_transcribe --host @SERVICE_HOST@ -p 8007 -m @SERVICE_MODEL@ --device @SERVICE_DEVICE@
+Restart=on-failure
+RestartSec=5
+User=@SERVICE_USER@
+Environment=HOME=@SERVICE_HOME@
+EnvironmentFile=/etc/whisper-transcribe.env
+WorkingDirectory=@SERVICE_HOME@
+StateDirectory=whisper
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@SERVICE_HOME@
+TimeoutStopSec=120
 
 [Install]
 WantedBy=multi-user.target
