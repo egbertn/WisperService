@@ -182,6 +182,41 @@ Private runtime library paths are embedded in Linux executables, including
 transitive dependencies, so the camera application's libraries are not selected.
 Moving private dependency directories requires reconfiguration and reinstallation.
 
+### Deploy over SSH to the Jetson
+
+After the initial installation below, run this from your development machine:
+
+```sh
+bash scripts/deploy-jetson.sh egbert@192.168.1.190 /home/egbert/WhisperService main
+```
+
+Replace the repository path with the existing clone on the Jetson. The optional
+last argument is a branch, tag or commit (default: `main`); push local commits
+first. The script fetches that revision from the remote clone's `origin` and
+checks it out detached. It refuses a dirty remote working tree and concurrent
+deployments of the same clone.
+
+The remote build uses Ninja, Release mode, two build jobs, CUDA detection and the
+private dependencies under `~/apps/whisper-service/deps`. Override the install
+prefix or job count when necessary:
+
+```sh
+JETSON_PREFIX=/opt/whisper-service JETSON_JOBS=2 \
+  bash scripts/deploy-jetson.sh egbert@192.168.1.190 /home/egbert/WhisperService main
+```
+
+All registered CTest tests must pass (an empty test suite is an error) before
+installation or restart. A failed build or test leaves the running service and
+installed executable untouched. After success the executable is staged and
+atomically replaced, then `whisper_transcribe.service` is restarted and checked
+for active status. This runs the unit suite, not the optional HTTP/GPU integration
+suite. A restart failure is reported but does not automatically roll back.
+
+The existing systemd unit and API-key environment file are preserved. The remote
+user needs write access to the clone/install prefix, SSH key authentication and
+non-interactive sudo access for the service commands (`sudo -n`). Dependencies
+must already be installed; the script does not rebuild Whisper or FFmpeg.
+
 For a CPU-only build, use a CPU-built Whisper package and configure
 `-DWHISPER_SERVICE_CUDA=OFF`. Merely disabling service CUDA detection does not
 remove dependencies from an already CUDA-built Whisper library.
@@ -265,6 +300,13 @@ query validation, JSON escaping/metadata units and safe model paths.
 
 ```sh
 ctest --test-dir build --output-on-failure
+```
+
+The SSH deployment script has separate tests (Node.js 18+, no Jetson required)
+using mocked remote commands to check failure handling and restart ordering:
+
+```sh
+node --test tests/deploy_jetson_tests.mjs
 ```
 
 End-to-end tests require Node.js 18+, a running service and the Whisper.cpp JFK
