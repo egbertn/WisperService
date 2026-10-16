@@ -1,101 +1,66 @@
-cmake_minimum_required(VERSION 3.10)
-project(WhisperTranscriber)
+cmake_minimum_required(VERSION 3.18)
+project(WhisperTranscriber VERSION 0.2.0 LANGUAGES CXX)
 
-# Set the C++ standard
 set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED True)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Specify compile options
-add_compile_options(-O2 -pthread)
-
-# Find threading package
+include(GNUInstallDirs)
+include(CTest)
 find_package(Threads REQUIRED)
-
-# Use pkg-config to find FFMPEG, and CURL
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(FFmpeg REQUIRED libavformat libavcodec libavutil libswresample)
-pkg_check_modules(CURL REQUIRED libcurl)
+pkg_check_modules(FFmpeg REQUIRED IMPORTED_TARGET libavformat>=59 libavcodec>=59 libavutil>=57 libswresample>=4)
+find_package(CURL 7.85 REQUIRED)
+find_package(nlohmann_json 3.2.0 REQUIRED)
+find_package(whisper CONFIG REQUIRED)
+find_package(ggml CONFIG REQUIRED)
 
-# Detect CUDA and set up optional linking
-find_package(CUDA QUIET)
-
-if(CUDA_FOUND)
-    message(STATUS "CUDA found: ${CUDA_VERSION}")
-    include_directories(${CUDA_INCLUDE_DIRS})
-    set(CUDA_LIBS ${CUDA_CUDART_LIBRARY})
-else()
-    message(STATUS "CUDA not found. Compiling without GPU support.")
-    set(CUDA_LIBS "")
-endif()
-
-# Include directories from pkg-config
-include_directories(${FFmpeg_INCLUDE_DIRS})
-include_directories(${CURL_INCLUDE_DIRS})
-
-# Link directories from pkg-config
-link_directories(${FFmpeg_LIBRARY_DIRS})
-link_directories(${CURL_LIBRARY_DIRS})
-
-# Link libraries from pkg-config
-set(FFmpeg_LIBS ${FFmpeg_LIBRARIES})
-set(CURL_LIBS ${CURL_LIBRARIES})
-
-# Specify the path to the pre-built Whisper library and include files
-set(WHISPER_LIB_PATH "/usr/local/lib")  # Update this path if necessary
-set(WHISPER_INCLUDE_PATH "/usr/local/include")  # Update this path if necessary
-
-# Include directories
-include_directories(${WHISPER_INCLUDE_PATH})
-
-# Include your project's include directory
-include_directories(${CMAKE_SOURCE_DIR}/include)
-
-# Add the executable
-add_executable(whisper_transcribe src/voice_transcribe.cpp)
-
-# Link libraries (optioneel CUDA)
-target_link_libraries(whisper_transcribe
-    ${FFmpeg_LIBS}
-    ${CURL_LIBS}
-    ${CUDA_LIBS}
-    Threads::Threads
-    whisper    
-)
-
-# Install the executable
-install(TARGETS whisper_transcribe DESTINATION /usr/local/bin)
-
-# Show CUDA status
-if(CUDA_FOUND)
-    message(STATUS "CUDA support enabled. Linking against ${CUDA_LIBS}")
-else()
-    message(STATUS "CUDA support disabled. CPU-only build.")
-endif()
-
-# Show linked libraries
-message(STATUS "FFmpeg include dirs: ${FFmpeg_INCLUDE_DIRS}")
-message(STATUS "FFmpeg library dirs: ${FFmpeg_LIBRARY_DIRS}")
-message(STATUS "FFmpeg libraries: ${FFmpeg_LIBRARIES}")
-
-message(STATUS "CURL include dirs: ${CURL_INCLUDE_DIRS}")
-message(STATUS "CURL library dirs: ${CURL_LIBRARY_DIRS}")
-message(STATUS "CURL libraries: ${CURL_LIBRARIES}")
-
-# Install the service (Linux)
+get_target_property(WHISPER_LIBRARY whisper IMPORTED_LOCATION)
+get_filename_component(WHISPER_LIBRARY_DIR "${WHISPER_LIBRARY}" DIRECTORY)
+set(CMAKE_BUILD_RPATH "${FFmpeg_LIBRARY_DIRS};${WHISPER_LIBRARY_DIR}")
+set(CMAKE_INSTALL_RPATH "${FFmpeg_LIBRARY_DIRS};${WHISPER_LIBRARY_DIR}")
 if(UNIX AND NOT APPLE)
-    configure_file(${CMAKE_SOURCE_DIR}/whisper_transcribe.service.in
-                   ${CMAKE_BINARY_DIR}/whisper_transcribe.service @ONLY)
-    install(FILES ${CMAKE_BINARY_DIR}/whisper_transcribe.service
-            DESTINATION /etc/systemd/system)
-    install(CODE "execute_process(COMMAND systemctl enable whisper_transcribe.service)")
-    install(CODE "execute_process(COMMAND systemctl start whisper_transcribe.service)")
+    # DT_RPATH also resolves the private libraries' transitive dependencies.
+    add_link_options(-Wl,--disable-new-dtags)
 endif()
 
-# Install the service (Windows)
-if(WIN32)
-    install(TARGETS whisper_transcribe DESTINATION C:/whisper_service)
+option(WHISPER_SERVICE_CUDA "Detect CUDA devices at runtime (Whisper must also have a CUDA backend)" ON)
+if(WHISPER_SERVICE_CUDA)
+    find_package(CUDAToolkit QUIET)
+endif()
 
-    # Add custom command to create the service
-    install(CODE "execute_process(COMMAND sc create WhisperService binPath= C:/whisper_service/whisper_transcribe.exe start= auto)")
-    install(CODE "execute_process(COMMAND sc start WhisperService)")
+add_library(transcriber_core STATIC src/audio.cpp src/model.cpp src/response.cpp)
+target_include_directories(transcriber_core PUBLIC include)
+target_link_libraries(transcriber_core PUBLIC PkgConfig::FFmpeg nlohmann_json::nlohmann_json whisper
+    PRIVATE CURL::libcurl)
+target_compile_options(transcriber_core PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(whisper_transcribe src/voice_transcribe.cpp)
+target_link_libraries(whisper_transcribe PRIVATE transcriber_core whisper Threads::Threads)
+target_compile_options(whisper_transcribe PRIVATE -Wall -Wextra -Wpedantic)
+if(WHISPER_SERVICE_CUDA AND CUDAToolkit_FOUND)
+    target_link_libraries(whisper_transcribe PRIVATE CUDA::cudart ggml::ggml ggml::ggml-base)
+    target_compile_definitions(whisper_transcribe PRIVATE WHISPER_SERVICE_HAS_CUDA=1)
+endif()
+
+# Keep private FFmpeg/Whisper libraries discoverable after installation.
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+set_target_properties(whisper_transcribe PROPERTIES INSTALL_RPATH_USE_LINK_PATH TRUE)
+install(TARGETS whisper_transcribe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+if(UNIX AND NOT APPLE)
+    set(SERVICE_USER "whisper" CACHE STRING "Unprivileged systemd service user")
+    set(SERVICE_HOME "/var/lib/whisper" CACHE PATH "Service home and model cache")
+    set(SERVICE_MODEL "small" CACHE STRING "Default model for the systemd service")
+    set(SERVICE_HOST "127.0.0.1" CACHE STRING "HTTP bind address for the systemd service")
+    set(SERVICE_DEVICE "auto" CACHE STRING "Inference device for the systemd service")
+    configure_file(whisper_transcribe.service.in whisper_transcribe.service @ONLY)
+    install(FILES ${CMAKE_CURRENT_BINARY_DIR}/whisper_transcribe.service
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/whisper-transcriber)
+endif()
+
+if(BUILD_TESTING)
+    add_executable(transcriber_tests tests/transcriber_tests.cpp)
+    target_link_libraries(transcriber_tests PRIVATE transcriber_core Threads::Threads)
+    add_test(NAME transcriber_unit COMMAND transcriber_tests)
 endif()
