@@ -187,22 +187,28 @@ Moving private dependency directories requires reconfiguration and reinstallatio
 After the initial installation below, run this from your development machine:
 
 ```sh
-bash scripts/deploy-jetson.sh egbert@192.168.1.190 /home/egbert/WhisperService main
+bash scripts/deploy-jetson.sh egbert@192.168.1.190
 ```
 
-Replace the repository path with the existing clone on the Jetson. The optional
-last argument is a branch, tag or commit (default: `main`); push local commits
-first. The script fetches that revision from the remote clone's `origin` and
-checks it out detached. It refuses a dirty remote working tree and concurrent
-deployments of the same clone.
+The installation directory is fixed at `~/apps/whisper-service` on the Jetson
+and must already contain `bin/whisper_transcribe` and `deps/`.
+No existing Git checkout is needed:
+the script fetches `https://github.com/egbertn/WisperService.git` into a unique
+temporary workspace on the Jetson and builds there. Source, build and staging
+files are removed on success or failure. Existing source/build directories in
+the installation are left untouched. The Jetson needs HTTPS access to GitHub.
+
+The repository and branch (`main`) are fixed; push local commits to `main`
+first. The script checks out the fetched commit detached and refuses
+concurrent deployments to the same installation directory.
 
 The remote build uses Ninja, Release mode, two build jobs, CUDA detection and the
-private dependencies under `~/apps/whisper-service/deps`. Override the install
-prefix or job count when necessary:
+private dependencies under `~/apps/whisper-service/deps`. Override the job count
+when necessary:
 
 ```sh
-JETSON_PREFIX=/opt/whisper-service JETSON_JOBS=2 \
-  bash scripts/deploy-jetson.sh egbert@192.168.1.190 /home/egbert/WhisperService main
+JETSON_JOBS=2 \
+  bash scripts/deploy-jetson.sh egbert@192.168.1.190
 ```
 
 All registered CTest tests must pass (an empty test suite is an error) before
@@ -213,7 +219,7 @@ for active status. This runs the unit suite, not the optional HTTP/GPU integrati
 suite. A restart failure is reported but does not automatically roll back.
 
 The existing systemd unit and API-key environment file are preserved. The remote
-user needs write access to the clone/install prefix, SSH key authentication and
+user needs write access to the install prefix, SSH key authentication and
 non-interactive sudo access for the service commands (`sudo -n`). Dependencies
 must already be installed; the script does not rebuild Whisper or FFmpeg.
 
