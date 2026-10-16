@@ -118,7 +118,7 @@ Linux is the supported deployment platform. Requirements:
   with a local 1.7.6 CPU build and Jetson 1.9.5 CUDA build.
 - FFmpeg development libraries: libavformat/libavcodec 59+,
   libavutil 57+, libswresample 4+. Validated with FFmpeg 8.
-- libcurl 7.85+ development files and nlohmann-json 3.2+.
+- libcurl 7.85+ development files and nlohmann-json 3.12+.
 - CUDA toolkit and a CUDA-enabled Whisper backend for GPU inference.
 
 Ubuntu development packages:
@@ -128,6 +128,23 @@ sudo apt-get install cmake ninja-build g++ pkg-config \
   libavformat-dev libavcodec-dev libavutil-dev libswresample-dev \
   libcurl4-openssl-dev nlohmann-json3-dev
 ```
+
+The Ubuntu package may provide an older nlohmann-json release. To install
+version 3.12.0 system-wide without replacing apt-managed headers, build and
+install it under `/usr/local`:
+
+```sh
+source_dir=$(mktemp -d /tmp/nlohmann-json.XXXXXX)
+git clone --depth 1 --branch v3.12.0 \
+  https://github.com/nlohmann/json.git "$source_dir"
+cmake -S "$source_dir" -B "$source_dir/build" \
+  -DJSON_BuildTests=OFF \
+  -DCMAKE_INSTALL_PREFIX=/usr/local
+sudo cmake --install "$source_dir/build"
+```
+
+The project requires nlohmann-json 3.12.0 or newer and resolves the installed
+CMake package from `/usr/local`.
 
 Use private prefixes on a Jetson with an existing camera pipeline. Do not replace
 the system FFmpeg or reuse the camera application's install directory.
@@ -169,7 +186,7 @@ architecture matching your GPU and give it a separate build directory.
 
 ```sh
 PKG_CONFIG_PATH="$HOME/apps/whisper-service/deps/ffmpeg/lib/pkgconfig" \
-cmake -S . -B build -G Ninja \
+cmake -U nlohmann_json_DIR -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$HOME/apps/whisper-service/deps/whisper" \
   -DCMAKE_INSTALL_PREFIX="$HOME/apps/whisper-service"

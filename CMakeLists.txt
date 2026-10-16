@@ -11,7 +11,7 @@ find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FFmpeg REQUIRED IMPORTED_TARGET libavformat>=59 libavcodec>=59 libavutil>=57 libswresample>=4)
 find_package(CURL 7.85 REQUIRED)
-find_package(nlohmann_json 3.2.0 REQUIRED)
+find_package(nlohmann_json 3.12.0 REQUIRED)
 find_package(whisper CONFIG REQUIRED)
 find_package(ggml CONFIG REQUIRED)
 
