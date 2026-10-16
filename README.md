@@ -4,8 +4,10 @@ Author: Egbert Nierop (Nierop Computer Vision, Netherlands).
 
 A C++17 HTTP service using Whisper.cpp for transcription and FFmpeg for audio
 decoding. Every upload is converted to mono, 16 kHz float PCM before inference.
-One model is loaded at startup, reused across requests, and released on shutdown.
-Requests do not share previous transcription context or prompts.
+Whisper is loaded on the first valid transcription request, reused while active,
+and unloaded after 10 minutes without a completed transcription. The lightweight
+HTTP service remains running; the next request reloads Whisper and may take
+longer. Requests do not share previous transcription context or prompts.
 
 ## HTTP API
 
@@ -62,8 +64,9 @@ Processing time includes decoding and waiting for the model, but not uploading.
 | `hint` | empty | Initial prompt, at most 4096 bytes; URL-encode its contents |
 | `format` | `json` | `json` or `text` |
 
-`GET /health` returns readiness, model and selected device. The HTTP listener only
-starts after the model has loaded.
+`GET /health` returns readiness, model and selected device. The HTTP listener
+starts without loading Whisper; the model loads when the first valid transcription
+request arrives.
 
 ### Limits and errors
 
@@ -94,6 +97,17 @@ missing or shorter than 32 characters. Keep it in a root-readable server-side
 environment file, never in source control, a URL, or browser code. The service
 does not provide TLS; use HTTPS at a reverse proxy and keep its upstream private.
 `GET /health` remains unauthenticated for readiness checks.
+
+### Public HTTPS proxy
+
+The Pi's Nginx terminates TLS for `api.adccure.nl` and forwards only
+`POST /` (plus `GET /health`) to the private Jetson listener at
+`192.168.1.190:8007`. Install
+[`deploy/nginx/api.adccure.nl.conf`](./deploy/nginx/api.adccure.nl.conf) after
+Certbot has issued `/etc/letsencrypt/live/api.adccure.nl/`. The service key is
+for server-to-server calls only; never expose it to browser JavaScript. A
+per-person demo key and its quotas belong in the later C# backend, not in this
+single service credential.
 
 ## Dependencies and build
 
@@ -271,6 +285,14 @@ The integration suite checks transcription and metadata for nine encodings,
 automatic language detection, translation, legacy text output, HTTP errors,
 upload/duration limits, overload and subsequent request recovery.
 
+Test
+```sh
+curl --fail-with-body \
+  --data-binary @recording.m4a \
+  -H "Authorization: Bearer <KEY>" \
+  -H "Content-Type: application/octet-stream" \
+  "https://api.adccure.nl/?lang=nl&translate=false"
+```
 ## License
 
 MIT; see [LICENSE](LICENSE). Third-party dependencies retain their own licenses.

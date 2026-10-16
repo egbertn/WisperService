@@ -6,12 +6,14 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 
 #ifdef WHISPER_SERVICE_HAS_CUDA
 #include <cuda_runtime_api.h>
@@ -98,55 +100,103 @@ bool use_cuda(const std::string& device) {
 
 class Transcriber {
 public:
-    Transcriber(const std::string& path, bool gpu) {
-        auto parameters = whisper_context_default_params();
-        parameters.use_gpu = gpu;
-        parameters.gpu_device = 0;
-        context_.reset(whisper_init_from_file_with_params(path.c_str(), parameters));
-        if (!context_) {
-            throw std::runtime_error("Cannot load Whisper model: " + path);
+    Transcriber(std::string path, bool gpu)
+        : path_(std::move(path)), gpu_(gpu), unloader_([this] { unload_when_idle(); }) {}
+
+    ~Transcriber() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
         }
+        condition_.notify_one();
+        unloader_.join();
     }
 
     Transcript run(const Audio& audio, const Options& options) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        auto parameters = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-        parameters.n_threads = static_cast<int>(std::max(1u, std::min(4u, std::thread::hardware_concurrency())));
-        parameters.language = options.language.c_str();
-        parameters.translate = options.translate;
-        parameters.initial_prompt = options.prompt.c_str();
-        parameters.print_realtime = false;
-        parameters.print_progress = false;
-        parameters.print_timestamps = false;
-        parameters.print_special = false;
-        parameters.no_context = true;
-        parameters.abort_callback = [](void*) { return interrupted != 0; };
-        if (whisper_full(context_.get(), parameters, audio.samples.data(),
-                         static_cast<int>(audio.samples.size())) != 0) {
-            throw std::runtime_error("Whisper transcription failed");
+        std::unique_lock<std::mutex> lock(mutex_);
+        try {
+            if (!context_) {
+                auto parameters = whisper_context_default_params();
+                parameters.use_gpu = gpu_;
+                parameters.gpu_device = 0;
+                context_.reset(whisper_init_from_file_with_params(path_.c_str(), parameters));
+                if (!context_) {
+                    throw std::runtime_error("Cannot load Whisper model: " + path_);
+                }
+                std::cerr << "Whisper model loaded\n";
+            }
+
+            auto parameters = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+            parameters.n_threads = static_cast<int>(std::max(1u, std::min(4u, std::thread::hardware_concurrency())));
+            parameters.language = options.language.c_str();
+            parameters.translate = options.translate;
+            parameters.initial_prompt = options.prompt.c_str();
+            parameters.print_realtime = false;
+            parameters.print_progress = false;
+            parameters.print_timestamps = false;
+            parameters.print_special = false;
+            parameters.no_context = true;
+            parameters.abort_callback = [](void*) { return interrupted != 0; };
+            if (whisper_full(context_.get(), parameters, audio.samples.data(),
+                             static_cast<int>(audio.samples.size())) != 0) {
+                throw std::runtime_error("Whisper transcription failed");
+            }
+            Transcript transcript;
+            int language = whisper_full_lang_id(context_.get());
+            const char* code = whisper_lang_str(language);
+            if (!code) {
+                throw std::runtime_error("Whisper returned an invalid language");
+            }
+            transcript.language = code;
+            double duration = static_cast<double>(audio.samples.size()) / sample_rate;
+            for (int i = 0; i < whisper_full_n_segments(context_.get()); ++i) {
+                std::string text = whisper_full_get_segment_text(context_.get(), i);
+                transcript.text += text;
+                double start = std::clamp(whisper_full_get_segment_t0(context_.get(), i) / 100.0, 0.0, duration);
+                double end = std::clamp(whisper_full_get_segment_t1(context_.get(), i) / 100.0, start, duration);
+                transcript.segments.push_back({start, end, text,
+                    whisper_full_get_segment_no_speech_prob(context_.get(), i)});
+            }
+            last_used_ = std::chrono::steady_clock::now();
+            lock.unlock();
+            condition_.notify_one();
+            return transcript;
+        } catch (...) {
+            if (lock.owns_lock()) {
+                last_used_ = std::chrono::steady_clock::now();
+                lock.unlock();
+                condition_.notify_one();
+            }
+            throw;
         }
-        Transcript transcript;
-        int language = whisper_full_lang_id(context_.get());
-        const char* code = whisper_lang_str(language);
-        if (!code) {
-            throw std::runtime_error("Whisper returned an invalid language");
-        }
-        transcript.language = code;
-        double duration = static_cast<double>(audio.samples.size()) / sample_rate;
-        for (int i = 0; i < whisper_full_n_segments(context_.get()); ++i) {
-            std::string text = whisper_full_get_segment_text(context_.get(), i);
-            transcript.text += text;
-            double start = std::clamp(whisper_full_get_segment_t0(context_.get(), i) / 100.0, 0.0, duration);
-            double end = std::clamp(whisper_full_get_segment_t1(context_.get(), i) / 100.0, start, duration);
-            transcript.segments.push_back({start, end, text,
-                whisper_full_get_segment_no_speech_prob(context_.get(), i)});
-        }
-        return transcript;
     }
 
 private:
+    void unload_when_idle() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (!stopping_) {
+            if (!context_) {
+                condition_.wait(lock, [this] { return stopping_ || context_ != nullptr; });
+                continue;
+            }
+
+            const auto deadline = last_used_ + std::chrono::minutes(10);
+            if (condition_.wait_until(lock, deadline) == std::cv_status::timeout &&
+                context_ && std::chrono::steady_clock::now() - last_used_ >= std::chrono::minutes(10)) {
+                context_.reset();
+                std::cerr << "Whisper model unloaded after 10 minutes of inactivity\n";
+            }
+        }
+    }
+
+    const std::string path_;
+    const bool gpu_;
     std::unique_ptr<whisper_context, decltype(&whisper_free)> context_{nullptr, whisper_free};
     std::mutex mutex_;
+    std::condition_variable condition_;
+    std::chrono::steady_clock::time_point last_used_{};
+    bool stopping_ = false;
+    std::thread unloader_;
 };
 
 void error_response(httplib::Response& response, int status, const std::string& message) {
@@ -204,16 +254,19 @@ int main(int argc, char** argv) {
         server.set_read_timeout(30);
         server.set_write_timeout(30);
         std::atomic<unsigned int> admitted{0};
+        server.set_pre_request_handler([&](const httplib::Request& request, httplib::Response& response) {
+            if (request.matched_route == "/" && !authorized(request, api_key)) {
+                response.set_header("WWW-Authenticate", "Bearer");
+                error_response(response, 401, "A valid Bearer API key is required");
+                return httplib::Server::HandlerResponse::Handled;
+            }
+            return httplib::Server::HandlerResponse::Unhandled;
+        });
         server.Get("/health", [&](const httplib::Request&, httplib::Response& response) {
             response.set_content(nlohmann::json({{"status", "ready"}, {"model", model},
                 {"device", gpu ? "cuda" : "cpu"}}).dump(), "application/json");
         });
         server.Post("/", [&](const httplib::Request& request, httplib::Response& response) {
-            if (!authorized(request, api_key)) {
-                response.set_header("WWW-Authenticate", "Bearer");
-                error_response(response, 401, "A valid Bearer API key is required");
-                return;
-            }
             if (admitted.fetch_add(1) >= 4) {
                 admitted.fetch_sub(1);
                 response.set_header("Retry-After", "5");
@@ -282,7 +335,8 @@ int main(int argc, char** argv) {
             }
         });
         std::cerr << "Listening on http://" << config.host << ':' << config.port
-                  << " (one " << (gpu ? "CUDA" : "CPU") << " model, at most four admitted requests)\n";
+                  << " (one on-demand " << (gpu ? "CUDA" : "CPU")
+                  << " model, unloaded after 10 idle minutes; at most four admitted requests)\n";
         bool success = false;
         try {
             success = server.listen_after_bind();
