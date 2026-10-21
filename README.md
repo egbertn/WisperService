@@ -182,6 +182,48 @@ The validated Jetson build uses `GGML_CUDA=ON`, CUDA 13.2 and
 `CMAKE_CUDA_ARCHITECTURES=87` for Orin. If rebuilding Whisper yourself, select the
 architecture matching your GPU and give it a separate build directory.
 
+### Rebuild Whisper for the Jetson Orin
+
+Run this from your local checkout (SSH key authentication required):
+
+```sh
+bash scripts/build-whisper-jetson.sh egbert@jetson.local
+# If mDNS is unavailable:
+bash scripts/build-whisper-jetson.sh egbert@192.168.1.190
+```
+
+The script checks for an ARM64 Linux Jetson Orin and the CUDA toolkit at
+`/usr/local/cuda`. It clones the validated upstream **v1.9.5** release using
+`git clone --depth 1` into a new `~/whisper-jetson.XXXXXXXX/source` directory
+on the Jetson. It builds with Ninja, Release mode, shared libraries,
+native CPU optimizations, `GGML_CUDA=ON`, and CUDA architecture **87**.
+The Orin Nano Super has approximately 8 GB of shared RAM; the default is
+two build jobs, not all CPU cores. Override with `JETSON_JOBS=1` if needed.
+The installed CUDA version is used; the validated host has CUDA 13.2.
+No packages, power profiles or system settings are changed.
+
+Verification checks the CMake configuration, runs the model-free upstream
+`test-common-utf8` and `test-whisper-buffer-loader` tests, and transcribes
+the upstream JFK sample in English. The inference log must show CUDA backend
+selection and a nonzero CUDA compute buffer, and the transcript must contain
+the expected JFK phrase; CPU fallback is an error. This is not the entire
+upstream test suite, which requires additional test models.
+
+The existing `~/whisper.cpp/models/ggml-base.bin` model is read without modification.
+To use another existing English-capable model, specify its **absolute remote**
+path (no model is downloaded automatically):
+
+```sh
+JETSON_JOBS=2 JETSON_MODEL=/home/egbert/.cache/whisper/ggml-small.bin \
+  bash scripts/build-whisper-jetson.sh egbert@192.168.1.190
+```
+
+The source, build, commit ID, logs and transcript remain in the printed workspace,
+including on failure. **Nothing is installed or restarted**: `~/whisper.cpp`,
+the service's private dependencies and the camera pipeline remain untouched.
+The resulting shared libraries and CMake packages can be installed later using
+`cmake --install` with an explicitly chosen private prefix.
+
 ### Build this service
 
 ```sh
@@ -330,6 +372,12 @@ using mocked remote commands to check failure handling and restart ordering:
 
 ```sh
 node --test tests/deploy_jetson_tests.mjs
+```
+
+The separate Whisper build script also has mocked SSH/build verification tests:
+
+```sh
+node --test tests/build_whisper_jetson_tests.mjs
 ```
 
 End-to-end tests require Node.js 18+, a running service and the Whisper.cpp JFK

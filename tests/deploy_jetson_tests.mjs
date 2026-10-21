@@ -24,8 +24,24 @@ function runDeployment(failure = '', extraArguments = []) {
         writeFileSync(join(repository, 'original-source.txt'), 'preserve this source');
         const executable = join(prefix, 'bin/whisper_transcribe');
         writeFileSync(executable, 'old executable', { mode: 0o755 });
+        const shared = join(root, 'apps/shared');
+        const ffmpeg = join(shared, 'ffmpeg/8.0.1-nvidia1-l4t39.2.1');
+        const whisper = join(shared, 'whisper/0c7be696-cuda');
+        for (const [base, files] of [
+            [ffmpeg, ['.ready', 'lib/libavformat.so', 'lib/libavcodec.so', 'lib/libavutil.so', 'lib/libswscale.so', 'lib/libswresample.so']],
+            [whisper, ['.ready', 'include/whisper.h', 'include/ggml.h', 'lib/cmake/whisper/whisper-config.cmake',
+                'lib/cmake/ggml/ggml-config.cmake', 'lib/libwhisper.so', 'lib/libggml.so', 'lib/libggml-base.so',
+                'lib/libggml-cpu.so', 'lib/libggml-cuda.so']],
+            [shared, ['models/whisper/ggml-base.bin', 'test-data/whisper/jfk.wav']],
+        ]) {
+            for (const file of files) {
+                const path = join(base, file);
+                mkdirSync(join(path, '..'), { recursive: true });
+                writeFileSync(path, 'existing dependency');
+            }
+        }
         writeFileSync(log, '');
-        writeFileSync(join(bin, 'ssh'), '#!/usr/bin/env bash\nexec bash -c "$4"\n', { mode: 0o755 });
+        writeFileSync(join(bin, 'ssh'), '#!/usr/bin/env bash\nexec bash -c "${@: -1}"\n', { mode: 0o755 });
         const mock = join(bin, 'mock');
         writeFileSync(mock, `#!/usr/bin/env bash
 set -euo pipefail
@@ -56,13 +72,50 @@ case "$tool" in
     ctest)
         [[ " $* " == *" --no-tests=error "* ]]
         [[ $TEST_FAILURE != tests && $TEST_FAILURE != no-tests ]] ;;
-    sudo) shift; exec "$@" ;;
+    pkg-config) echo "$TEST_FFMPEG" ;;
+    ffmpeg)
+        echo 'h264_nvv4l2dec hevc_nvv4l2dec libx264 libx265' ;;
+    ldd)
+        if [[ $TEST_FAILURE == dependency ]]; then echo 'libwhisper.so.1 => not found'; exit 0; fi
+        for library in libavformat libavcodec libavutil libswscale libswresample; do
+            echo "$library.so.1 => $TEST_FFMPEG/lib/$library.so.1 (0x1234)"
+        done
+        for library in libwhisper libggml libggml-base libggml-cpu libggml-cuda; do
+            path="$TEST_WHISPER/lib"
+            if [[ $TEST_FAILURE == wrong-path && $1 == *stage* ]]; then path=/wrong/lib; fi
+            echo "$library.so.1 => $path/$library.so.1 (0x1234)"
+        done ;;
+    curl)
+        [[ $TEST_FAILURE != health ]] || exit 22
+        echo '{"status":"ready"}' ;;
+    sudo)
+        shift
+        case "$1" in
+            install) exit 0 ;;
+            cat)
+                for library in libavformat libavcodec libavutil libswresample; do
+                    echo "0-1 r-xp 00000000 00:00 1 $TEST_FFMPEG/lib/$library.so.1"
+                done
+                for library in libwhisper libggml libggml-base libggml-cpu libggml-cuda; do
+                    echo "0-1 r-xp 00000000 00:00 1 $TEST_WHISPER/lib/$library.so.1"
+                done
+                if [[ $TEST_FAILURE == runtime-path ]]; then
+                    echo '0-1 r-xp 00000000 00:00 1 /old/private/libggml.so.0'
+                fi
+                exit 0 ;;
+        esac
+        exec "$@" ;;
     systemctl)
+        if [[ $1 == show ]]; then echo 1234; fi
         if [[ $1 == restart && $TEST_FAILURE == restart ]]; then exit 1; fi ;;
 esac
 `, { mode: 0o755 });
-        for (const tool of ['git', 'cmake', 'ctest', 'sudo', 'systemctl', 'ninja', 'pkg-config']) {
+        for (const tool of ['git', 'cmake', 'ctest', 'sudo', 'systemctl', 'ninja', 'pkg-config', 'ldd', 'curl']) {
             symlinkSync(mock, join(bin, tool));
+        }
+        for (const [base, tool] of [[ffmpeg, 'ffmpeg'], [ffmpeg, 'ffprobe'], [whisper, 'whisper-cli']]) {
+            mkdirSync(join(base, 'bin'), { recursive: true });
+            symlinkSync(mock, join(base, 'bin', tool));
         }
         const result = spawnSync('bash', [
             deploy, 'test@jetson', ...extraArguments,
@@ -77,6 +130,8 @@ esac
                 TEST_PREFIX: prefix,
                 TEST_LOG: log,
                 TEST_FAILURE: failure,
+                TEST_FFMPEG: ffmpeg,
+                TEST_WHISPER: whisper,
                 TMPDIR: root,
             },
         });
@@ -108,6 +163,10 @@ test('successful tests precede installation and service restart', () => {
     assert.match(result.log, /git remote add origin https:\/\/github.com\/egbertn\/WisperService.git/);
     assert.match(result.log, /git fetch --no-tags -- origin main/);
     assert.match(result.log, /cmake -S .*\/whisper-deploy\.[^/]+\/source -B .*\/whisper-deploy\.[^/]+\/build/);
+    assert.match(result.log, /-DWHISPER_SERVICE_WHISPER_ROOT=.*\/apps\/shared\/whisper\/0c7be696-cuda/);
+    assert.match(result.log, /-DWHISPER_SERVICE_FFMPEG_ROOT=.*\/apps\/shared\/ffmpeg\/8\.0\.1-nvidia1-l4t39\.2\.1/);
+    assert.match(result.log, /20-shared-libraries\.conf/);
+    assert.match(result.log, /curl .*http:\/\/jetson:8007\/health/);
 });
 
 test('installation uses the fixed path under the remote home directory', () => {
@@ -158,3 +217,21 @@ test('restart failure is reported, not presented as success', () => {
     assert.doesNotMatch(result.stdout, /is active/);
     assert.deepEqual(result.temporaryDirectories, []);
 });
+
+for (const failure of ['dependency', 'wrong-path']) {
+    test(`${failure} failure preserves the binary and does not restart`, () => {
+        const result = runDeployment(failure);
+        assert.notEqual(result.status, 0);
+        assert.equal(result.executable, 'old executable');
+        assert.doesNotMatch(result.log, /systemctl restart |systemctl daemon-reload/);
+    });
+}
+
+for (const failure of ['health', 'runtime-path']) {
+    test(`${failure} failure after restart is not presented as success`, () => {
+        const result = runDeployment(failure);
+        assert.notEqual(result.status, 0);
+        assert.match(result.log, /systemctl restart /);
+        assert.doesNotMatch(result.stdout, /is active/);
+    });
+}
