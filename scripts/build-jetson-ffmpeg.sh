@@ -3,10 +3,10 @@ set -euo pipefail
 
 if [[ $# -ne 1 || $1 == -* ]]; then
     echo "Usage: $0 user@jetson" >&2
-    echo "Optional environment: JETSON_JOBS (default: 2)" >&2
+    echo "Optional environment: JETSON_JOBS (default: 6)" >&2
     exit 1
 fi
-printf -v remote_command '%q ' bash -s -- "${JETSON_JOBS:-2}"
+printf -v remote_command '%q ' bash -s -- "${JETSON_JOBS:-6}"
 ssh -o BatchMode=yes -o ConnectTimeout=15 "$1" "$remote_command" <<'REMOTE'
 set -euo pipefail
 fail() { echo "Error: $*" >&2; exit 1; }

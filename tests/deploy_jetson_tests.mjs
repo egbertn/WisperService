@@ -126,7 +126,7 @@ esac
                 ...process.env,
                 PATH: `${bin}:${process.env.PATH}`,
                 HOME: root,
-                JETSON_JOBS: '2',
+                JETSON_JOBS: '',
                 TEST_PREFIX: prefix,
                 TEST_LOG: log,
                 TEST_FAILURE: failure,
@@ -151,6 +151,7 @@ esac
 test('successful tests precede installation and service restart', () => {
     const result = runDeployment();
     assert.equal(result.status, 0, result.stderr);
+    assert.match(result.log, /cmake --build .* --parallel 6/);
     assert.equal(result.executable, 'new executable');
     const tests = result.log.indexOf('ctest ');
     const install = result.log.indexOf('cmake --install ');

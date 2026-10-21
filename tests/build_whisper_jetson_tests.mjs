@@ -94,6 +94,9 @@ case "$tool" in
         fi
         if [[ $TEST_FAILURE == buffer ]]; then
             echo 'whisper_init_state: CUDA0 compute buffer size = 0.00 MB'
+        elif [[ $TEST_FAILURE == model-allocation ]]; then
+            echo 'whisper_model_load:        CUDA0 total size =   147.37 MB'
+            echo 'whisper_init_state: compute buffer (encode) = 23.09 MB'
         else
             echo 'whisper_init_state: CUDA0 compute buffer size = 188.45 MB'
         fi
@@ -129,7 +132,7 @@ esac
                 ...process.env,
                 PATH: `${bin}:${process.env.PATH}`,
                 HOME: root,
-                JETSON_JOBS: '2',
+                JETSON_JOBS: '',
                 JETSON_MODEL: '',
                 TEST_FAILURE: failure,
                 TEST_LOG: log,
@@ -167,7 +170,7 @@ test('shallow pinned Orin CUDA build is verified without installation', () => {
     for (const flag of ['CMAKE_BUILD_TYPE=Release', 'BUILD_SHARED_LIBS=ON', 'GGML_NATIVE=ON', 'GGML_CUDA=ON', 'CMAKE_CUDA_ARCHITECTURES=87']) {
         assert.ok(result.log.includes(`-D${flag}`), result.log);
     }
-    assert.match(result.log, /cmake --build .* --parallel 2/);
+    assert.match(result.log, /cmake --build .* --parallel 6/);
     assert.match(result.log, /ctest .*--no-tests=error -R \^\(test-common-utf8\|test-whisper-buffer-loader\)\$/);
     assert.ok(result.log.indexOf('ctest ') < result.log.indexOf('whisper-cli '));
     assert.doesNotMatch(result.log, /--install|systemctl|sudo/);
@@ -190,7 +193,7 @@ for (const failure of ['clone', 'configure', 'build', 'cache', 'tests', 'inferen
             tests: /ctest /,
             inference: /whisper-cli /,
             cpu: /did not select a CUDA backend/,
-            buffer: /No nonzero CUDA compute buffer/,
+            buffer: /No nonzero CUDA allocation/,
             backend: /Backend initialization failed/,
             transcript: /JFK transcription did not match/,
         };
@@ -239,6 +242,12 @@ test('default verification uses shared base without the legacy checkout', () => 
     assert.match(result.log, /whisper-cli -m .*\/apps\/shared\/models\/whisper\/ggml-base\.bin /);
     assert.doesNotMatch(result.log, /curl /);
     assert.equal(result.sharedBase, 'shared base model');
+});
+
+test('pinned SDK CUDA model allocation log is accepted without device-labelled compute buffers', () => {
+    const result = runBuild('model-allocation', {}, ['test@jetson', '--install-shared']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.ready, /0c7be696/);
 });
 
 test('shared provisioning downloads missing base before compiling', () => {

@@ -68,7 +68,7 @@ esac
             timeout: 10000,
             env: {
                 ...process.env, HOME: root, PATH: `${bin}:${process.env.PATH}`,
-                JETSON_JOBS: '2', TEST_PREFIX: prefix, TEST_MOCK: mock, TEST_LOG: log, TEST_FAILURE: failure,
+                JETSON_JOBS: '', TEST_PREFIX: prefix, TEST_MOCK: mock, TEST_LOG: log, TEST_FAILURE: failure,
             },
         });
         assert.ifError(result.error);
@@ -82,6 +82,7 @@ test('FFmpeg is verified and installed with the shared video/audio feature set',
     const result = runBuild();
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.ready, true);
+    assert.match(result.log, /make -j6/);
     assert.match(result.log, /configure .*--enable-gpl .*--enable-libx264 --enable-libx265 .*--enable-nvv4l2dec/);
     assert.match(result.log, /--disable-autodetect/);
     assert.doesNotMatch(result.log, /--disable-network|--disable-swscale|systemctl|sudo/);
