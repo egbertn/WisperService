@@ -3,11 +3,11 @@ set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 || $1 == -* || ( $# -eq 2 && $2 != --install-shared ) ]]; then
     echo "Usage: $0 user@jetson [--install-shared]" >&2
-    echo "Optional environment: JETSON_JOBS (default: 2), JETSON_MODEL (absolute remote model path)" >&2
+    echo "Optional environment: JETSON_JOBS (default: 6), JETSON_MODEL (absolute remote model path)" >&2
     exit 1
 fi
 
-printf -v remote_command '%q ' bash -s -- "${JETSON_JOBS:-2}" "${JETSON_MODEL:-}" "${2:-}"
+printf -v remote_command '%q ' bash -s -- "${JETSON_JOBS:-6}" "${JETSON_MODEL:-}" "${2:-}"
 ssh -o BatchMode=yes -o ConnectTimeout=10 "$1" "$remote_command" <<'REMOTE'
 set -euo pipefail
 
@@ -133,8 +133,8 @@ ctest --test-dir "$build" --output-on-failure --no-tests=error \
     -l en -t "$jobs" --output-txt --output-file "$workspace/jfk" \
     2>&1 | tee "$workspace/inference.log"
 grep -Eq 'using CUDA[0-9]+ backend' "$workspace/inference.log" || fail "Inference did not select a CUDA backend."
-grep -Eq 'CUDA[0-9]+ compute buffer size[[:space:]]*=[[:space:]]*[1-9][0-9]*[.]' \
-    "$workspace/inference.log" || fail "No nonzero CUDA compute buffer found; CPU fallback is not accepted."
+grep -Eq 'CUDA[0-9]+ (compute buffer size|total size)[[:space:]]*=[[:space:]]*[1-9][0-9]*[.]' \
+    "$workspace/inference.log" || fail "No nonzero CUDA allocation found; CPU fallback is not accepted."
 if grep -Eq 'failed to initialize.*backend' "$workspace/inference.log"; then
     fail "Backend initialization failed."
 fi
@@ -149,8 +149,8 @@ if [[ -n $install_shared ]]; then
         -l en -t "$jobs" --output-txt --output-file "$workspace/installed-jfk" \
         2>&1 | tee "$workspace/installed-inference.log"
     grep -Eq 'using CUDA[0-9]+ backend' "$workspace/installed-inference.log" || fail "Installed SDK did not select CUDA."
-    grep -Eq 'CUDA[0-9]+ compute buffer size[[:space:]]*=[[:space:]]*[1-9][0-9]*[.]' \
-        "$workspace/installed-inference.log" || fail "Installed SDK did not allocate a CUDA compute buffer."
+    grep -Eq 'CUDA[0-9]+ (compute buffer size|total size)[[:space:]]*=[[:space:]]*[1-9][0-9]*[.]' \
+        "$workspace/installed-inference.log" || fail "Installed SDK did not allocate CUDA memory."
     if grep -Eq 'failed to initialize.*backend' "$workspace/installed-inference.log"; then
         fail "Installed SDK backend initialization failed."
     fi

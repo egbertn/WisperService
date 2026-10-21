@@ -88,7 +88,7 @@ request arrives.
 Only the first selected audio stream is transcribed. External media references
 are blocked. Changing sample formats within a single stream is rejected.
 Supported formats depend on the linked FFmpeg decoders and demuxers, not the
-filename extension. The private build below enables WAV/PCM, MP3, AAC/M4A,
+filename extension. The shared FFmpeg build supports WAV/PCM, MP3, AAC/M4A,
 WebM/Opus, Ogg/Vorbis, FLAC, ALAC, AIFF and common WMA variants.
 
 Every transcription request requires `Authorization: Bearer <key>`. The key is
@@ -146,41 +146,63 @@ sudo cmake --install "$source_dir/build"
 The project requires nlohmann-json 3.12.0 or newer and resolves the installed
 CMake package from `/usr/local`.
 
-Use private prefixes on a Jetson with an existing camera pipeline. Do not replace
-the system FFmpeg or reuse the camera application's install directory.
+### Shared Jetson dependencies
 
-### Isolated NVIDIA FFmpeg build
-
-Obtain the FFmpeg source archive from the NVIDIA Jetson repository matching the
-installed L4T release. The deployment used the existing
-`~/camera-build-deps/ffmpeg_8.0.1-nvidia1.tar.xz` archive, whose Debian changelog
-identifies `7:8.0.1-nvidia1`. The camera install and its source trees are untouched.
+WhisperService owns the standalone dependency builders used by both this service
+and `camera_stream_analyze`. Run them from the development machine over SSH:
 
 ```sh
-bash scripts/build-jetson-ffmpeg.sh \
-  ~/camera-build-deps/ffmpeg_8.0.1-nvidia1.tar.xz \
-  ~/apps/whisper-service/deps/ffmpeg
+bash scripts/prepare-jetson-deps.sh egbert@192.168.1.190
+# Or build/check either dependency separately:
+bash scripts/build-jetson-ffmpeg.sh egbert@192.168.1.190
+bash scripts/build-whisper-jetson.sh egbert@192.168.1.190 --install-shared
 ```
 
-This extracts a fresh source tree, builds with two jobs and installs shared
-libraries with private runtime paths. It refuses to overwrite an existing prefix
-or build directory. Use a fresh prefix for subsequent builds. NVIDIA video/CUDA
-codecs are unnecessary for audio decoding; CUDA acceleration belongs to Whisper.
-The script keeps GPL/nonfree components disabled and disables FFmpeg networking.
+Both application deploy scripts call the preparation step automatically. It
+checks complete, verified installations and skips recompilation when available.
+It installs nothing system-wide and never restarts a service. Default build
+parallelism is six jobs (`JETSON_JOBS=2` reduces memory pressure).
 
-### Existing Jetson Whisper build
+The remote paths are pinned:
 
-Use the existing CUDA build from `~/whisper.cpp`; installing it below does not
-rebuild it or replace its original artifacts:
-
-```sh
-cmake --install ~/whisper.cpp/build \
-  --prefix ~/apps/whisper-service/deps/whisper
+```text
+~/apps/shared/
+├── ffmpeg/8.0.1-nvidia1-l4t39.2.1/
+├── whisper/0c7be696-cuda/
+├── models/whisper/ggml-base.bin
+└── test-data/whisper/jfk.wav
 ```
 
-The validated Jetson build uses `GGML_CUDA=ON`, CUDA 13.2 and
-`CMAKE_CUDA_ARCHITECTURES=87` for Orin. If rebuilding Whisper yourself, select the
-architecture matching your GPU and give it a separate build directory.
+FFmpeg uses NVIDIA's `8.0.1-nvidia1` archive on native L4T **39.2.1**.
+An existing archive under `~/camera-build-deps` is reused, otherwise downloaded;
+either way SHA-256 must match
+`d8ab33a31c685398112b2039f784ab71b2379e3adb6bcebfc9324f678e2d2922`.
+The shared build retains the camera's RTSP/network, audio, swscale,
+NVIDIA V4L2 H.264/HEVC and libx264/libx265 features. **This is a GPL-enabled
+FFmpeg build**, unlike the former restricted audio-only service build.
+Distribution of linked binaries must comply with the applicable licenses.
+The builder verifies library/pkg-config prefixes, decoders and encoders.
+Existing Jetson multimedia headers, libv4l2 and x264/x265 development files are
+required; no packages or system settings are changed.
+
+The shared Whisper SDK pins commit
+`0c7be696371069e0baa2515ed7aa08d5a5473aa6`, matching the camera preset.
+It builds Release shared libraries with CUDA architecture **87** for Jetson
+Orin, tests upstream units and real GPU transcription, installs headers,
+Whisper/GGML libraries and CMake packages, and repeats inference against the
+installed SDK. CPU fallback is an error. A base model must already exist at
+`~/whisper.cpp/models/ggml-base.bin` or the shared model path.
+`JETSON_MODEL` can select another model for verification, but it is never
+silently published as the base model.
+
+Build directories and logs are retained. A `.ready` marker is written only after
+verification; per-dependency locks prevent simultaneous builds. Existing partial
+prefixes are not overwritten: inspect the retained diagnostics and move an
+incomplete prefix aside before retrying. Complete SDK releases are immutable:
+for an upgrade, change the versioned paths consistently in both repositories
+and retain the previous release until both applications are validated.
+Old `deps/` installs, `~/whisper.cpp` and the camera's old FFmpeg are not removed
+automatically. Remove them only after both services have migrated successfully.
 
 ### Rebuild Whisper for the Jetson Orin
 
@@ -198,20 +220,24 @@ The script checks for an ARM64 Linux Jetson Orin and the CUDA toolkit at
 on the Jetson. It builds with Ninja, Release mode, shared libraries,
 native CPU optimizations, `GGML_CUDA=ON`, and CUDA architecture **87**.
 The Orin Nano Super has approximately 8 GB of shared RAM; the default is
-two build jobs, not all CPU cores. Override with `JETSON_JOBS=1` if needed.
+six build jobs, matching its six CPU cores. Override with `JETSON_JOBS=2` if memory is limited.
 The installed CUDA version is used; the validated host has CUDA 13.2.
 No packages, power profiles or system settings are changed.
 
 Verification checks the CMake configuration, runs the model-free upstream
 `test-common-utf8` and `test-whisper-buffer-loader` tests, and transcribes
 the upstream JFK sample in English. The inference log must show CUDA backend
-selection and a nonzero CUDA compute buffer, and the transcript must contain
+selection and a nonzero CUDA memory allocation, and the transcript must contain
 the expected JFK phrase; CPU fallback is an error. This is not the entire
 upstream test suite, which requires additional test models.
 
-The existing `~/whisper.cpp/models/ggml-base.bin` model is read without modification.
-To use another existing English-capable model, specify its **absolute remote**
-path (no model is downloaded automatically):
+The default model is `~/apps/shared/models/whisper/ggml-base.bin`. Shared
+provisioning reuses this base model or copies it from the old checkout if
+available; otherwise it downloads base atomically from the Whisper.cpp Hugging
+Face repository. Failed or empty downloads are not published. A standalone
+build requires an existing model; run `scripts/prepare-jetson-deps.sh` first.
+To verify with another existing English-capable model, specify its **absolute
+remote** path; this does not replace the shared base model:
 
 ```sh
 JETSON_JOBS=2 JETSON_MODEL=/home/egbert/.cache/whisper/ggml-small.bin \
@@ -221,25 +247,28 @@ JETSON_JOBS=2 JETSON_MODEL=/home/egbert/.cache/whisper/ggml-small.bin \
 The source, build, commit ID, logs and transcript remain in the printed workspace,
 including on failure. **Nothing is installed or restarted**: `~/whisper.cpp`,
 the service's private dependencies and the camera pipeline remain untouched.
-The resulting shared libraries and CMake packages can be installed later using
-`cmake --install` with an explicitly chosen private prefix.
+Use `--install-shared` for the separately pinned shared-SDK workflow above.
+Without that option this command remains a verification-only v1.9.5 build.
 
 ### Build this service
 
 ```sh
-PKG_CONFIG_PATH="$HOME/apps/whisper-service/deps/ffmpeg/lib/pkgconfig" \
+PKG_CONFIG_PATH="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1/lib/pkgconfig" \
+PKG_CONFIG_LIBDIR="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1/lib/pkgconfig" \
 cmake -U nlohmann_json_DIR -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$HOME/apps/whisper-service/deps/whisper" \
+  -DWHISPER_SERVICE_FFMPEG_ROOT="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1" \
+  -DWHISPER_SERVICE_WHISPER_ROOT="$HOME/apps/shared/whisper/0c7be696-cuda" \
   -DCMAKE_INSTALL_PREFIX="$HOME/apps/whisper-service"
 cmake --build build --parallel 2
 ctest --test-dir build --output-on-failure
 cmake --install build
 ```
 
-Private runtime library paths are embedded in Linux executables, including
-transitive dependencies, so the camera application's libraries are not selected.
-Moving private dependency directories requires reconfiguration and reinstallation.
+Selected runtime library paths are embedded in Linux executables, including
+transitive dependencies. The root options reject libraries outside the selected
+installations; use a fresh build directory when migrating from private prefixes.
+Local development without those options retains normal package discovery.
 
 ### Deploy over SSH to the Jetson
 
@@ -250,7 +279,8 @@ bash scripts/deploy-jetson.sh egbert@192.168.1.190
 ```
 
 The installation directory is fixed at `~/apps/whisper-service` on the Jetson
-and must already contain `bin/whisper_transcribe` and `deps/`.
+and must already contain `bin/whisper_transcribe`. The existing system service
+and API-key environment file must already be installed.
 No existing Git checkout is needed:
 the script fetches `https://github.com/egbertn/WisperService.git` into a unique
 temporary workspace on the Jetson and builds there. Source, build and staging
@@ -261,8 +291,9 @@ The repository and branch (`main`) are fixed; push local commits to `main`
 first. The script checks out the fetched commit detached and refuses
 concurrent deployments to the same installation directory.
 
-The remote build uses Ninja, Release mode, two build jobs, CUDA detection and the
-private dependencies under `~/apps/whisper-service/deps`. Override the job count
+The dependency builders run first, independently of the application build.
+The remote build uses Ninja, Release mode, six build jobs, required CUDA toolkit
+and the shared dependencies under `~/apps/shared`. Override the job count
 when necessary:
 
 ```sh
@@ -274,13 +305,23 @@ All registered CTest tests must pass (an empty test suite is an error) before
 installation or restart. A failed build or test leaves the running service and
 installed executable untouched. After success the executable is staged and
 atomically replaced, then `whisper_transcribe.service` is restarted and checked
-for active status. This runs the unit suite, not the optional HTTP/GPU integration
-suite. A restart failure is reported but does not automatically roll back.
+for active status and a ready `/health` response. Before replacement, `ldd`
+must resolve all FFmpeg and Whisper/GGML libraries from the shared prefixes;
+after restart the same paths are checked in `/proc/<pid>/maps`.
+The health URL defaults to `http://<SSH-host>:8007/health`; override
+`JETSON_HEALTH_URL` for another bind address/port (reachable from the Jetson).
+This runs the unit suite and health check, not the full HTTP integration suite.
+A restart, health or runtime-path failure is reported without automatic rollback.
 
-The existing systemd unit and API-key environment file are preserved. The remote
+The existing systemd unit and API-key environment file are preserved, including
+model selection, service user and bind address. Deployment installs only a
+`20-shared-libraries.conf` drop-in with the selected library search path,
+then reloads systemd. The model cache remains in the configured service HOME;
+sharing an SDK does not force the service to use the camera's base model.
+The remote
 user needs write access to the install prefix, SSH key authentication and
-non-interactive sudo access for the service commands (`sudo -n`). Dependencies
-must already be installed; the script does not rebuild Whisper or FFmpeg.
+non-interactive sudo access for service/drop-in installation and runtime
+inspection (`sudo -n`).
 
 For a CPU-only build, use a CPU-built Whisper package and configure
 `-DWHISPER_SERVICE_CUDA=OFF`. Merely disabling service CUDA detection does not
@@ -371,7 +412,7 @@ The SSH deployment script has separate tests (Node.js 18+, no Jetson required)
 using mocked remote commands to check failure handling and restart ordering:
 
 ```sh
-node --test tests/deploy_jetson_tests.mjs
+node --test tests/deploy_jetson_tests.mjs tests/build_whisper_jetson_tests.mjs tests/build_ffmpeg_jetson_tests.mjs
 ```
 
 The separate Whisper build script also has mocked SSH/build verification tests:
@@ -381,8 +422,9 @@ node --test tests/build_whisper_jetson_tests.mjs
 ```
 
 End-to-end tests require Node.js 18+, a running service and the Whisper.cpp JFK
-sample. Generate fixtures using a separate full FFmpeg installation with
-libmp3lame/libopus/libvorbis encoders; the private service build is decode-focused.
+sample. Generate fixtures using a full FFmpeg installation with
+libmp3lame/libopus/libvorbis encoders; those optional encoders are not enabled
+in the shared Jetson build.
 Generated audio remains in the ignored build directory:
 
 ```sh
