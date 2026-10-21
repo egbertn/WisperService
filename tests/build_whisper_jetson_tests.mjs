@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -8,17 +8,20 @@ import { fileURLToPath } from 'node:url';
 
 const script = fileURLToPath(new URL('../scripts/build-whisper-jetson.sh', import.meta.url));
 
-function runBuild(failure = '', overrides = {}, args = ['test@jetson']) {
+function runBuild(failure = '', overrides = {}, args = ['test@jetson'], setup = {}) {
     const root = mkdtempSync(join(tmpdir(), 'whisper-build-test-'));
     try {
         const bin = join(root, 'mock-bin');
         const cuda = join(root, 'cuda');
         const model = join(root, 'whisper.cpp/models/ggml-base.bin');
+        const sharedBase = join(root, 'apps/shared/models/whisper/ggml-base.bin');
         const log = join(root, 'commands.log');
         for (const directory of [bin, join(cuda, 'bin'), join(root, 'whisper.cpp/models')]) {
             mkdirSync(directory, { recursive: true });
         }
-        writeFileSync(model, 'original model');
+        if (setup.legacyModel !== false) writeFileSync(model, 'original model');
+        mkdirSync(join(root, 'apps/shared/models/whisper'), { recursive: true });
+        if (setup.sharedModel !== false) writeFileSync(sharedBase, 'shared base model');
         writeFileSync(join(root, 'board'), failure === 'board' ? 'Jetson Xavier' : 'NVIDIA Jetson Orin Nano Super\0');
         writeFileSync(log, '');
         writeFileSync(join(bin, 'ssh'), `#!${process.execPath}
@@ -39,6 +42,11 @@ case "$tool" in
     uname)
         if [[ $1 == -s ]]; then echo Linux; else echo aarch64; fi ;;
     nvcc) echo 'CUDA 13.2' ;;
+    curl)
+        while [[ $1 != --output ]]; do shift; done
+        printf 'downloaded base model' > "$2"
+        [[ $TEST_FAILURE != download ]] || exit 22
+        if [[ $TEST_FAILURE == empty-download ]]; then : > "$2"; fi ;;
     git)
         if [[ $1 == clone ]]; then
             [[ $TEST_FAILURE != clone ]] || exit 1
@@ -96,10 +104,24 @@ case "$tool" in
         fi ;;
 esac
 `, { mode: 0o755 });
-        for (const tool of ['git', 'cmake', 'ctest', 'ninja', 'g++', 'uname', 'ldd']) {
+        for (const tool of ['git', 'cmake', 'ctest', 'ninja', 'g++', 'uname', 'ldd', 'curl']) {
             symlinkSync(mock, join(bin, tool));
         }
         symlinkSync(mock, join(cuda, 'bin/nvcc'));
+        if (setup.ready) {
+            const prefix = join(root, 'apps/shared/whisper/0c7be696-cuda');
+            for (const file of ['include/whisper.h', 'include/ggml.h',
+                'lib/cmake/whisper/whisper-config.cmake', 'lib/cmake/ggml/ggml-config.cmake',
+                'lib/libwhisper.so', 'lib/libggml.so', 'lib/libggml-base.so',
+                'lib/libggml-cpu.so', 'lib/libggml-cuda.so', '.ready']) {
+                mkdirSync(join(prefix, file, '..'), { recursive: true });
+                writeFileSync(join(prefix, file), 'existing SDK');
+            }
+            mkdirSync(join(prefix, 'bin'));
+            symlinkSync(mock, join(prefix, 'bin/whisper-cli'));
+            mkdirSync(join(root, 'apps/shared/test-data/whisper'), { recursive: true });
+            writeFileSync(join(root, 'apps/shared/test-data/whisper/jfk.wav'), 'sample');
+        }
         const result = spawnSync('bash', [script, ...args], {
             encoding: 'utf8',
             timeout: 10000,
@@ -120,7 +142,9 @@ esac
         return {
             ...result,
             log: readFileSync(log, 'utf8'),
-            model: readFileSync(model, 'utf8'),
+            model: existsSync(model) ? readFileSync(model, 'utf8') : '',
+            sharedBase: existsSync(sharedBase) ? readFileSync(sharedBase, 'utf8') : '',
+            modelFiles: readdirSync(join(root, 'apps/shared/models/whisper')),
             workspaces: readdirSync(root).filter(name => name.startsWith('whisper-jetson.')),
             ready: (() => {
                 try {
@@ -208,6 +232,54 @@ test('shared mode fetches the exact commit and publishes only after installed SD
     assert.equal(result.model, 'original model');
     assert.doesNotMatch(result.log, /systemctl|sudo/);
 });
+
+test('default verification uses shared base without the legacy checkout', () => {
+    const result = runBuild('', {}, ['test@jetson'], { legacyModel: false });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.log, /whisper-cli -m .*\/apps\/shared\/models\/whisper\/ggml-base\.bin /);
+    assert.doesNotMatch(result.log, /curl /);
+    assert.equal(result.sharedBase, 'shared base model');
+});
+
+test('shared provisioning downloads missing base before compiling', () => {
+    const result = runBuild('', {}, ['test@jetson', '--install-shared'], { legacyModel: false, sharedModel: false });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.sharedBase, 'downloaded base model');
+    assert.deepEqual(result.modelFiles, ['ggml-base.bin']);
+    assert.match(result.log, /https:\/\/huggingface\.co\/ggerganov\/whisper\.cpp\/resolve\/main\/ggml-base\.bin/);
+    assert.ok(result.log.indexOf('curl ') < result.log.indexOf('cmake -S '));
+    assert.match(result.ready, /0c7be696/);
+});
+
+test('shared provisioning reuses legacy base without downloading', () => {
+    const result = runBuild('', {}, ['test@jetson', '--install-shared'], { sharedModel: false });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.sharedBase, 'original model');
+    assert.doesNotMatch(result.log, /curl /);
+});
+
+test('ready SDK repairs missing base without recompilation', () => {
+    const result = runBuild('', {}, ['test@jetson', '--install-shared'], {
+        legacyModel: false, sharedModel: false, ready: true,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.sharedBase, 'downloaded base model');
+    assert.doesNotMatch(result.log, /git |cmake /);
+    assert.match(result.stdout, /skipping build/);
+});
+
+for (const failure of ['download', 'empty-download']) {
+    test(`${failure} never publishes a partial base model or starts compilation`, () => {
+        const result = runBuild(failure, {}, ['test@jetson', '--install-shared'], {
+            legacyModel: false, sharedModel: false,
+        });
+        assert.notEqual(result.status, 0);
+        assert.equal(result.sharedBase, '');
+        assert.deepEqual(result.modelFiles, []);
+        assert.equal(result.ready, '');
+        assert.doesNotMatch(result.log, /git |cmake /);
+    });
+}
 
 for (const failure of ['install', 'linkage', 'cpu', 'buffer', 'transcript']) {
     test(`shared ${failure} failure never publishes readiness`, () => {

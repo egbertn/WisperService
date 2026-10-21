@@ -13,13 +13,39 @@ set -euo pipefail
 
 fail() { echo "Error: $*" >&2; exit 1; }
 jobs=$1
-model=${2:-"$HOME/whisper.cpp/models/ggml-base.bin"}
 install_shared=${3:-}
 cuda=/usr/local/cuda
 revision=v1.9.5
 shared="$HOME/apps/shared"
+base="$shared/models/whisper/ggml-base.bin"
+model=${2:-"$base"}
 prefix="$shared/whisper/0c7be696-cuda"
 commit=0c7be696371069e0baa2515ed7aa08d5a5473aa6
+[[ $jobs =~ ^[1-9][0-9]*$ ]] || fail "JETSON_JOBS must be positive."
+if [[ -n ${2:-} ]]; then
+    [[ $model == /* && -s $model ]] || fail "Model not found; set JETSON_MODEL to an existing absolute remote model path: $model"
+fi
+
+prepare_base() (
+    set -euo pipefail
+    [[ ! -s $base ]] || exit 0
+    mkdir -p "${base%/*}"
+    temporary=$(mktemp "${base}.XXXXXXXX")
+    trap 'rm -f -- "$temporary"' EXIT
+    if [[ -s "$HOME/whisper.cpp/models/ggml-base.bin" ]]; then
+        echo "Reusing existing base model for $base"
+        cp "$HOME/whisper.cpp/models/ggml-base.bin" "$temporary"
+    else
+        command -v curl >/dev/null || fail "Missing required tool: curl"
+        echo "Downloading Whisper base model to $base"
+        curl --fail --location --retry 2 --connect-timeout 30 --max-time 3600 \
+            --speed-limit 1024 --speed-time 60 --output "$temporary" \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+    fi
+    [[ -s $temporary ]] || fail "Downloaded base model is empty."
+    chmod 644 "$temporary"
+    mv -- "$temporary" "$base"
+)
 
 verify_install() {
     local input libraries
@@ -40,19 +66,14 @@ if [[ -n $install_shared ]]; then
     flock -n 9 || fail "Another shared Whisper build is running."
     if [[ -f "$prefix/.ready" ]]; then
         verify_install
-        [[ -s "$shared/models/whisper/ggml-base.bin" && -s "$shared/test-data/whisper/jfk.wav" ]] ||
-            fail "Shared Whisper model or test sample is missing."
+        [[ -s "$shared/test-data/whisper/jfk.wav" ]] || fail "Shared Whisper test sample is missing."
+        prepare_base
         echo "Verified shared Whisper at $prefix; skipping build."
         exit 0
     fi
     [[ ! -e $prefix ]] || fail "Incomplete Whisper prefix exists: $prefix; inspect and move it aside before retrying."
-    if [[ -z ${2:-} && -s "$shared/models/whisper/ggml-base.bin" ]]; then
-        model="$shared/models/whisper/ggml-base.bin"
-    fi
 fi
 
-[[ $jobs =~ ^[1-9][0-9]*$ ]] || fail "JETSON_JOBS must be positive."
-[[ $model == /* && -s $model ]] || fail "Model not found; set JETSON_MODEL to an existing absolute remote model path: $model"
 for tool in git cmake ctest ninja g++ uname mktemp grep tee; do
     command -v "$tool" >/dev/null || fail "Missing required tool: $tool"
 done
@@ -61,6 +82,10 @@ done
 board=$(tr -d '\0' < /proc/device-tree/model)
 [[ $board == *Jetson*Orin* ]] || fail "Architecture 87 requires a Jetson Orin; detected: $board"
 [[ -x $cuda/bin/nvcc ]] || fail "CUDA toolkit not found at $cuda."
+if [[ -n $install_shared ]]; then
+    prepare_base
+fi
+[[ $model == /* && -s $model ]] || fail "Model not found; run prepare-jetson-deps.sh first or set JETSON_MODEL to an existing absolute remote model path: $model"
 "$cuda/bin/nvcc" --version
 echo "Jetson: $board; CUDA architecture: 87; build jobs: $jobs"
 
@@ -131,12 +156,6 @@ if [[ -n $install_shared ]]; then
     fi
     grep -Eiq 'ask not what your country can do for you' "$workspace/installed-jfk.txt" || fail "Installed SDK transcription failed."
     mkdir -p "$shared/models/whisper" "$shared/test-data/whisper"
-    # A custom verification model must not be silently published as the base model.
-    base="$HOME/whisper.cpp/models/ggml-base.bin"
-    if [[ ! -s "$shared/models/whisper/ggml-base.bin" ]]; then
-        [[ -s $base ]] || fail "Base model required at $base before publishing the shared SDK."
-        install -m 644 "$base" "$shared/models/whisper/ggml-base.bin"
-    fi
     install -m 644 "$source/samples/jfk.wav" "$shared/test-data/whisper/jfk.wav"
     cp "$workspace/commit.txt" "$prefix/commit.txt"
     cp "$build/CMakeCache.txt" "$prefix/build-config.txt"
