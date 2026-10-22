@@ -83,7 +83,13 @@ case "$tool" in
         esac ;;
     ctest) [[ $TEST_FAILURE != tests ]] ;;
     ldd)
-        if [[ $TEST_FAILURE == linkage ]]; then echo 'libwhisper.so => not found'; else echo 'resolved'; fi ;;
+        if [[ $TEST_FAILURE == linkage ]]; then
+            echo 'libwhisper.so => not found'
+        else
+            for library in libwhisper libggml libggml-base libggml-cpu libggml-cuda; do
+                echo "$library.so.1 => $HOME/apps/shared/whisper/0c7be696-cuda/lib/$library.so.1 (0x1234)"
+            done
+        fi ;;
     whisper-cli)
         [[ $TEST_FAILURE != inference ]] || exit 1
         if [[ $TEST_FAILURE != cpu ]]; then

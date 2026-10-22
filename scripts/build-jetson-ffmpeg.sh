@@ -20,16 +20,26 @@ flock -n 9 || fail "Another shared FFmpeg build is running."
 
 verify() {
     [[ -x "$prefix/bin/ffmpeg" && -x "$prefix/bin/ffprobe" ]] || fail "Incomplete FFmpeg executables at $prefix"
-    local library
+    local library libraries arrow resolved rest
     for library in libavformat libavcodec libavutil libswscale libswresample; do
         [[ -s "$prefix/lib/$library.so" ]] || fail "Missing $library at $prefix"
-        [[ $(PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --variable=prefix "$library") == "$prefix" ]] ||
+        [[ $(PKG_CONFIG_PATH="$prefix/lib/pkgconfig" PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig" pkg-config --variable=prefix "$library") == "$prefix" ]] ||
             fail "Incorrect pkg-config prefix for $library"
     done
-    "$prefix/bin/ffmpeg" -hide_banner -decoders > "$shared/.ffmpeg-decoders"
+    libraries=$(LD_LIBRARY_PATH="$prefix/lib" ldd "$prefix/bin/ffmpeg")
+    if grep -q 'not found' <<< "$libraries"; then
+        fail "Shared FFmpeg has unresolved libraries: $libraries"
+    fi
+    while read -r library arrow resolved rest; do
+        case "$library" in
+            libav*.so*|libsw*.so*)
+                [[ $resolved == "$prefix/lib/"* ]] || fail "Unexpected FFmpeg dependency: $library => $resolved" ;;
+        esac
+    done <<< "$libraries"
+    LD_LIBRARY_PATH="$prefix/lib" "$prefix/bin/ffmpeg" -hide_banner -decoders > "$shared/.ffmpeg-decoders"
     grep -q h264_nvv4l2dec "$shared/.ffmpeg-decoders" || fail "Missing Jetson H.264 decoder"
     grep -q hevc_nvv4l2dec "$shared/.ffmpeg-decoders" || fail "Missing Jetson HEVC decoder"
-    "$prefix/bin/ffmpeg" -hide_banner -encoders > "$shared/.ffmpeg-encoders"
+    LD_LIBRARY_PATH="$prefix/lib" "$prefix/bin/ffmpeg" -hide_banner -encoders > "$shared/.ffmpeg-encoders"
     grep -q libx264 "$shared/.ffmpeg-encoders" || fail "Missing x264 encoder"
     grep -q libx265 "$shared/.ffmpeg-encoders" || fail "Missing x265 encoder"
     rm -f -- "$shared/.ffmpeg-decoders" "$shared/.ffmpeg-encoders"
