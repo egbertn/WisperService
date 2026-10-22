@@ -12,7 +12,7 @@ function runBuild(failure = '', existing = false) {
     const root = mkdtempSync(join(tmpdir(), 'ffmpeg-build-test-'));
     try {
         const bin = join(root, 'mock-bin');
-        const prefix = join(root, 'apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1');
+        const prefix = join(root, 'apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1');
         const log = join(root, 'commands.log');
         mkdirSync(bin);
         writeFileSync(log, '');
@@ -52,8 +52,32 @@ case "$tool" in
             echo "libavcodec.so.1 => $TEST_PREFIX/lib/libavcodec.so.1 (0x1234)"
         fi ;;
     ffmpeg)
-        if [[ $TEST_FAILURE != decoders ]]; then echo 'h264_nvv4l2dec hevc_nvv4l2dec'; fi
-        if [[ $TEST_FAILURE != encoders ]]; then echo 'libx264 libx265'; fi ;;
+        case "\${@: -1}" in
+            -decoders)
+                if [[ $TEST_FAILURE != decoders ]]; then echo 'h264_nvv4l2dec hevc_nvv4l2dec'; fi ;;
+            -encoders)
+                if [[ $TEST_FAILURE != encoders ]]; then echo 'libx264 libx265'; fi
+                if [[ $TEST_FAILURE != aac ]]; then echo aac; fi ;;
+            -protocols)
+                printf 'Supported file protocols:\\nInput:\\n'
+                for protocol in file pipe http tcp udp rtp; do
+                    if [[ $TEST_FAILURE != protocols || $protocol != tcp ]]; then echo "  $protocol"; fi
+                done
+                printf 'Output:\\n  file\\n  pipe\\n'
+                if [[ $TEST_FAILURE == extra-protocol ]]; then echo '  rtmp'; fi ;;
+            -demuxers)
+                echo ' D. = Demuxing supported'
+                for format in rtsp rtp sdp mpegts h264 hevc mov,mp4,m4a,3gp,3g2,mj2 matroska,webm wav mp3 aac ogg flac aiff asf rm; do
+                    if [[ $TEST_FAILURE != demuxers || $format != wav ]]; then echo " D  $format Mock demuxer"; fi
+                done
+                if [[ $TEST_FAILURE == extra-demuxer ]]; then echo ' D  hls Mock demuxer'; fi ;;
+            -muxers)
+                echo ' .E = Muxing supported'
+                for format in mp4 mov ipod wav mp3 adts matroska webm ogg flac null; do
+                    if [[ $TEST_FAILURE != muxers || $format != mp4 ]]; then echo "  E $format Mock muxer"; fi
+                done
+                if [[ $TEST_FAILURE == extra-muxer ]]; then echo '  E rtsp Mock muxer'; fi ;;
+        esac ;;
 esac
 `, { mode: 0o755 });
         for (const tool of ['uname', 'dpkg-query', 'curl', 'sha256sum', 'tar', 'make', 'pkg-config', 'ldd']) {
@@ -91,6 +115,9 @@ test('FFmpeg is verified and installed with the shared video/audio feature set',
     assert.match(result.log, /make -j6/);
     assert.match(result.log, /configure .*--enable-gpl .*--enable-libx264 --enable-libx265 .*--enable-nvv4l2dec/);
     assert.match(result.log, /--disable-autodetect/);
+    assert.match(result.log, /--disable-protocols --enable-protocol=file,pipe,http,tcp,udp,rtp(?: |$)/);
+    assert.match(result.log, /--disable-demuxers --enable-demuxer=rtsp,rtp,sdp,mpegts,h264,hevc,mov,matroska,wav,mp3,aac,ogg,flac,aiff,asf(?: |$)/);
+    assert.match(result.log, /--disable-muxers --enable-muxer=mp4,mov,ipod,wav,mp3,adts,matroska,webm,ogg,flac,null(?: |$)/);
     assert.doesNotMatch(result.log, /--disable-network|--disable-swscale|systemctl|sudo/);
     assert.ok(result.log.indexOf('sha256sum ') < result.log.indexOf('configure '));
     assert.ok(result.log.indexOf('make install') < result.log.indexOf('ffmpeg -hide_banner -decoders'));
@@ -110,10 +137,18 @@ test('broken existing installation fails rather than being silently reused or ov
     assert.doesNotMatch(result.log, /make |configure /);
 });
 
-for (const failure of ['platform', 'download', 'checksum', 'configure', 'build', 'install', 'pkg-config', 'linkage', 'decoders', 'encoders']) {
+for (const failure of ['platform', 'download', 'checksum', 'configure', 'build', 'install', 'pkg-config', 'linkage', 'decoders', 'encoders', 'aac', 'protocols', 'extra-protocol', 'demuxers', 'extra-demuxer', 'muxers', 'extra-muxer']) {
     test(`FFmpeg ${failure} failure never publishes readiness`, () => {
         const result = runBuild(failure);
         assert.notEqual(result.status, 0);
         assert.equal(result.ready, false);
+    });
+}
+
+for (const failure of ['protocols', 'extra-protocol', 'demuxers', 'extra-demuxer', 'muxers', 'extra-muxer']) {
+    test(`existing FFmpeg with ${failure} mismatch is rejected without rebuilding`, () => {
+        const result = runBuild(failure, true);
+        assert.notEqual(result.status, 0);
+        assert.doesNotMatch(result.log, /make |configure /);
     });
 }

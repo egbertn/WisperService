@@ -167,7 +167,7 @@ The remote paths are pinned:
 
 ```text
 ~/apps/shared/
-├── ffmpeg/8.0.1-nvidia1-l4t39.2.1/
+├── ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1/
 ├── whisper/0c7be696-cuda/
 ├── models/whisper/ggml-base.bin
 └── test-data/whisper/jfk.wav
@@ -177,11 +177,29 @@ FFmpeg uses NVIDIA's `8.0.1-nvidia1` archive on native L4T **39.2.1**.
 An existing archive under `~/camera-build-deps` is reused, otherwise downloaded;
 either way SHA-256 must match
 `d8ab33a31c685398112b2039f784ab71b2379e3adb6bcebfc9324f678e2d2922`.
-The shared build retains the camera's RTSP/network, audio, swscale,
-NVIDIA V4L2 H.264/HEVC and libx264/libx265 features. **This is a GPL-enabled
+The `rtsp-local1` profile enables only `file`, `pipe`, `http`, `tcp`, `udp`
+and `rtp` protocols. RTSP is a demuxer, not a protocol in FFmpeg; its implementation
+requires HTTP support internally. HTTPS/RTSPS, RTMP, HLS and DASH are not enabled.
+Input demuxers cover RTSP/RTP/SDP, MPEG-TS, raw H.264/HEVC and the audio upload
+formats documented above; FFmpeg also selects the RM demuxer internally for RTP.
+Output muxers are limited to MP4/MOV/M4A, WAV, MP3, ADTS, Matroska/WebM, Ogg,
+FLAC and null output for decode tests. MP4 muxing is required even for local
+recordings: it packages compressed video/audio into `event.mp4` without
+broadcasting. The other local formats retain fixture generation and audio tools;
+RTSP/RTP, HLS and DASH output muxers are disabled.
+This is not a network access-control boundary: enabled transports can also
+send data, but neither application uses FFmpeg to broadcast.
+
+The build retains audio codecs, swscale, swresample, NVIDIA V4L2 H.264/HEVC
+and libx264/libx265. The camera's x264 recording mode and HEVC tests need these
+encoders; AAC encoding is also required for camera audio. **This is a GPL-enabled
 FFmpeg build**, unlike the former restricted audio-only service build.
 Distribution of linked binaries must comply with the applicable licenses.
-The builder verifies library/pkg-config prefixes, decoders and encoders.
+The builder verifies library/pkg-config prefixes, decoders, encoders and the
+protocol/demuxer/muxer allowlists before publishing or reusing an installation.
+The profile has a new immutable prefix; the previous unprofiled installation
+is retained. Rebuild both applications against the new prefix with fresh CMake
+build directories; existing installations are not automatically relinked.
 Existing Jetson multimedia headers, libv4l2 and x264/x265 development files are
 required; no packages or system settings are changed.
 
@@ -254,11 +272,11 @@ Without that option this command remains a verification-only v1.9.5 build.
 ### Build this service
 
 ```sh
-PKG_CONFIG_PATH="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1/lib/pkgconfig" \
-PKG_CONFIG_LIBDIR="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1/lib/pkgconfig" \
+PKG_CONFIG_PATH="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1/lib/pkgconfig" \
+PKG_CONFIG_LIBDIR="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1/lib/pkgconfig" \
 cmake -U nlohmann_json_DIR -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DWHISPER_SERVICE_FFMPEG_ROOT="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1" \
+  -DWHISPER_SERVICE_FFMPEG_ROOT="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1" \
   -DWHISPER_SERVICE_WHISPER_ROOT="$HOME/apps/shared/whisper/0c7be696-cuda" \
   -DCMAKE_INSTALL_PREFIX="$HOME/apps/whisper-service"
 cmake --build build --parallel 2

@@ -13,7 +13,11 @@ fail() { echo "Error: $*" >&2; exit 1; }
 jobs=$1
 [[ $jobs =~ ^[1-9][0-9]*$ ]] || fail "JETSON_JOBS must be positive."
 shared="$HOME/apps/shared"
-prefix="$shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1"
+prefix="$shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1"
+# RTSP selects HTTP internally, even without HTTP tunneling.
+protocols=file,pipe,http,tcp,udp,rtp
+demuxers=rtsp,rtp,sdp,mpegts,h264,hevc,mov,matroska,wav,mp3,aac,ogg,flac,aiff,asf
+muxers=mp4,mov,ipod,wav,mp3,adts,matroska,webm,ogg,flac,null
 mkdir -p "$shared"
 exec 9>"$shared/.ffmpeg-build.lock"
 flock -n 9 || fail "Another shared FFmpeg build is running."
@@ -42,7 +46,33 @@ verify() {
     LD_LIBRARY_PATH="$prefix/lib" "$prefix/bin/ffmpeg" -hide_banner -encoders > "$shared/.ffmpeg-encoders"
     grep -q libx264 "$shared/.ffmpeg-encoders" || fail "Missing x264 encoder"
     grep -q libx265 "$shared/.ffmpeg-encoders" || fail "Missing x265 encoder"
+    grep -qw aac "$shared/.ffmpeg-encoders" || fail "Missing AAC encoder"
     rm -f -- "$shared/.ffmpeg-decoders" "$shared/.ffmpeg-encoders"
+    local listing component
+    listing=$(LD_LIBRARY_PATH="$prefix/lib" "$prefix/bin/ffmpeg" -hide_banner -protocols)
+    listing=$(awk '/^(Input|Output):/ { protocols = 1; next } protocols && NF == 1 { print $1 }' <<< "$listing")
+    for component in file pipe http tcp udp rtp; do
+        grep -qx "$component" <<< "$listing" || fail "Missing protocol: $component"
+    done
+    for component in $listing; do
+        [[ ,$protocols, == *",$component,"* ]] || fail "Unexpected protocol: $component"
+    done
+    # RTP selects RM; MOV and Matroska expose additional format aliases.
+    verify_formats demuxers "$demuxers,rm,mp4,m4a,3gp,3g2,mj2,webm" \
+        rtsp rtp sdp mpegts h264 hevc mov wav mp3 aac matroska ogg flac aiff asf
+    verify_formats muxers "$muxers" mp4 mov ipod wav mp3 adts matroska webm ogg flac null
+}
+verify_formats() {
+    local kind=$1 allowed=$2 listing component
+    shift 2
+    listing=$(LD_LIBRARY_PATH="$prefix/lib" "$prefix/bin/ffmpeg" -hide_banner "-$kind")
+    listing=$(awk '$1 ~ /^[DE.]+$/ && $2 != "=" { print $2 }' <<< "$listing" | tr ',' '\n')
+    for component in "$@"; do
+        grep -qx "$component" <<< "$listing" || fail "Missing $kind component: $component"
+    done
+    for component in $listing; do
+        [[ ,$allowed, == *",$component,"* ]] || fail "Unexpected $kind component: $component"
+    done
 }
 if [[ -f "$prefix/.ready" ]]; then
     verify
@@ -73,6 +103,9 @@ echo "Building shared Jetson FFmpeg; logs: $work"
     --enable-shared --disable-static --enable-gpl \
     --enable-libx264 --enable-libx265 --enable-libv4l2 --enable-nvv4l2dec \
     --disable-autodetect --disable-doc --disable-debug \
+    --disable-protocols --enable-protocol="$protocols" \
+    --disable-demuxers --enable-demuxer="$demuxers" \
+    --disable-muxers --enable-muxer="$muxers" \
     --disable-nvenc --disable-nvdec --disable-cuvid --disable-cuda-nvcc \
     --enable-rpath \
     --extra-cflags="-mcpu=native -I/usr/src/jetson_multimedia_api/include" \
@@ -81,6 +114,6 @@ echo "Building shared Jetson FFmpeg; logs: $work"
 make -j"$jobs" > "$work/build.log" 2>&1
 make install > "$work/install.log" 2>&1
 verify
-printf '%s\n' 'FFmpeg 8.0.1-nvidia1; L4T 39.2.1; GPL; x264/x265; NVIDIA V4L2' > "$prefix/.ready"
+printf '%s\n' 'FFmpeg 8.0.1-nvidia1; L4T 39.2.1; rtsp-local1; GPL; x264/x265/AAC; NVIDIA V4L2' > "$prefix/.ready"
 echo "Shared FFmpeg installed at $prefix; source and logs retained at $work"
 REMOTE
