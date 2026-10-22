@@ -17,7 +17,7 @@ prefix="$HOME/apps/whisper-service"
 jobs=$1
 health_url=$2
 service=whisper_transcribe.service
-ffmpeg="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1"
+ffmpeg="$HOME/apps/shared/ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1"
 whisper="$HOME/apps/shared/whisper/0c7be696-cuda"
 
 if [[ ! $jobs =~ ^[1-9][0-9]*$ ]]; then

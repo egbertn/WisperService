@@ -25,7 +25,7 @@ function runDeployment(failure = '', extraArguments = []) {
         const executable = join(prefix, 'bin/whisper_transcribe');
         writeFileSync(executable, 'old executable', { mode: 0o755 });
         const shared = join(root, 'apps/shared');
-        const ffmpeg = join(shared, 'ffmpeg/8.0.1-nvidia1-l4t39.2.1');
+        const ffmpeg = join(shared, 'ffmpeg/8.0.1-nvidia1-l4t39.2.1-rtsp-local1');
         const whisper = join(shared, 'whisper/0c7be696-cuda');
         for (const [base, files] of [
             [ffmpeg, ['.ready', 'lib/libavformat.so', 'lib/libavcodec.so', 'lib/libavutil.so', 'lib/libswscale.so', 'lib/libswresample.so']],
@@ -74,7 +74,19 @@ case "$tool" in
         [[ $TEST_FAILURE != tests && $TEST_FAILURE != no-tests ]] ;;
     pkg-config) echo "$TEST_FFMPEG" ;;
     ffmpeg)
-        echo 'h264_nvv4l2dec hevc_nvv4l2dec libx264 libx265' ;;
+        case "\${@: -1}" in
+            -protocols)
+                printf 'Input:\\nfile\\npipe\\nhttp\\ntcp\\nudp\\nrtp\\nOutput:\\nfile\\npipe\\n' ;;
+            -demuxers)
+                for format in rtsp rtp sdp mpegts h264 hevc mov,mp4,m4a,3gp,3g2,mj2 matroska,webm wav mp3 aac ogg flac aiff asf rm; do
+                    echo " D $format Mock demuxer"
+                done ;;
+            -muxers)
+                for format in mp4 mov ipod wav mp3 adts matroska webm ogg flac null; do
+                    echo " E $format Mock muxer"
+                done ;;
+            *) echo 'h264_nvv4l2dec hevc_nvv4l2dec libx264 libx265 aac' ;;
+        esac ;;
     ldd)
         if [[ $TEST_FAILURE == dependency ]]; then echo 'libwhisper.so.1 => not found'; exit 0; fi
         for library in libavformat libavcodec libavutil libswscale libswresample; do
@@ -165,7 +177,7 @@ test('successful tests precede installation and service restart', () => {
     assert.match(result.log, /git fetch --no-tags -- origin main/);
     assert.match(result.log, /cmake -S .*\/whisper-deploy\.[^/]+\/source -B .*\/whisper-deploy\.[^/]+\/build/);
     assert.match(result.log, /-DWHISPER_SERVICE_WHISPER_ROOT=.*\/apps\/shared\/whisper\/0c7be696-cuda/);
-    assert.match(result.log, /-DWHISPER_SERVICE_FFMPEG_ROOT=.*\/apps\/shared\/ffmpeg\/8\.0\.1-nvidia1-l4t39\.2\.1/);
+    assert.match(result.log, /-DWHISPER_SERVICE_FFMPEG_ROOT=.*\/apps\/shared\/ffmpeg\/8\.0\.1-nvidia1-l4t39\.2\.1-rtsp-local1/);
     assert.match(result.log, /20-shared-libraries\.conf/);
     assert.match(result.log, /curl .*http:\/\/jetson:8007\/health/);
 });
