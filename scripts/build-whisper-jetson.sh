@@ -48,7 +48,7 @@ prepare_base() (
 )
 
 verify_install() {
-    local input libraries
+    local input libraries library arrow resolved rest
     for input in include/whisper.h include/ggml.h lib/cmake/whisper/whisper-config.cmake \
         lib/cmake/ggml/ggml-config.cmake lib/libwhisper.so lib/libggml.so lib/libggml-base.so \
         lib/libggml-cpu.so lib/libggml-cuda.so bin/whisper-cli; do
@@ -58,6 +58,16 @@ verify_install() {
     if grep -q 'not found' <<< "$libraries"; then
         fail "Shared Whisper SDK has unresolved libraries: $libraries"
     fi
+    for library in libwhisper libggml libggml-base libggml-cpu libggml-cuda; do
+        grep -F "$library.so" <<< "$libraries" | grep -Fq "=> $prefix/lib/" ||
+            fail "Shared Whisper SDK does not resolve $library from $prefix/lib"
+    done
+    while read -r library arrow resolved rest; do
+        case "$library" in
+            libwhisper.so*|libggml*.so*)
+                [[ $resolved == "$prefix/lib/"* ]] || fail "Unexpected Whisper dependency: $library => $resolved" ;;
+        esac
+    done <<< "$libraries"
 }
 if [[ -n $install_shared ]]; then
     revision=$commit
@@ -109,6 +119,7 @@ git -C "$source" rev-parse HEAD | tee "$workspace/commit.txt"
 cmake -S "$source" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_SHARED_LIBS=ON \
+    -DCMAKE_INSTALL_LIBDIR=lib \
     -DGGML_NATIVE=ON \
     -DGGML_CUDA=ON \
     -DCMAKE_CUDA_ARCHITECTURES=87 \

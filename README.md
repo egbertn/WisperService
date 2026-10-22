@@ -190,8 +190,9 @@ The shared Whisper SDK pins commit
 It builds Release shared libraries with CUDA architecture **87** for Jetson
 Orin, tests upstream units and real GPU transcription, installs headers,
 Whisper/GGML libraries and CMake packages, and repeats inference against the
-installed SDK. CPU fallback is an error. A base model must already exist at
-`~/whisper.cpp/models/ggml-base.bin` or the shared model path.
+installed SDK. CPU fallback is an error. Shared provisioning reuses the base model
+at the shared path, copies the old checkout's model, or downloads it atomically
+when neither is available.
 `JETSON_MODEL` can select another model for verification, but it is never
 silently published as the base model.
 

@@ -45,12 +45,18 @@ case "$tool" in
         fi ;;
     pkg-config)
         if [[ $TEST_FAILURE == pkg-config ]]; then echo /wrong/prefix; else echo "$TEST_PREFIX"; fi ;;
+    ldd)
+        if [[ $TEST_FAILURE == linkage ]]; then
+            echo 'libavcodec.so.1 => not found'
+        else
+            echo "libavcodec.so.1 => $TEST_PREFIX/lib/libavcodec.so.1 (0x1234)"
+        fi ;;
     ffmpeg)
         if [[ $TEST_FAILURE != decoders ]]; then echo 'h264_nvv4l2dec hevc_nvv4l2dec'; fi
         if [[ $TEST_FAILURE != encoders ]]; then echo 'libx264 libx265'; fi ;;
 esac
 `, { mode: 0o755 });
-        for (const tool of ['uname', 'dpkg-query', 'curl', 'sha256sum', 'tar', 'make', 'pkg-config']) {
+        for (const tool of ['uname', 'dpkg-query', 'curl', 'sha256sum', 'tar', 'make', 'pkg-config', 'ldd']) {
             symlinkSync(mock, join(bin, tool));
         }
         if (existing) {
@@ -104,7 +110,7 @@ test('broken existing installation fails rather than being silently reused or ov
     assert.doesNotMatch(result.log, /make |configure /);
 });
 
-for (const failure of ['platform', 'download', 'checksum', 'configure', 'build', 'install', 'pkg-config', 'decoders', 'encoders']) {
+for (const failure of ['platform', 'download', 'checksum', 'configure', 'build', 'install', 'pkg-config', 'linkage', 'decoders', 'encoders']) {
     test(`FFmpeg ${failure} failure never publishes readiness`, () => {
         const result = runBuild(failure);
         assert.notEqual(result.status, 0);
