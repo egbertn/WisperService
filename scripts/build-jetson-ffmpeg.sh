@@ -66,7 +66,8 @@ verify_formats() {
     local kind=$1 allowed=$2 listing component
     shift 2
     listing=$(LD_LIBRARY_PATH="$prefix/lib" "$prefix/bin/ffmpeg" -hide_banner "-$kind")
-    listing=$(awk '$1 ~ /^[DE.]+$/ && $2 != "=" { print $2 }' <<< "$listing" | tr ',' '\n')
+    # Match the fixed-width D/E flags, excluding device rows (third flag: d).
+    listing=$(awk '/^ [D ][E ] / { print $2 }' <<< "$listing" | tr ',' '\n')
     for component in "$@"; do
         grep -qx "$component" <<< "$listing" || fail "Missing $kind component: $component"
     done
