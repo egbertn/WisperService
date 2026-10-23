@@ -66,13 +66,15 @@ case "$tool" in
                 printf 'Output:\\n  file\\n  pipe\\n'
                 if [[ $TEST_FAILURE == extra-protocol ]]; then echo '  rtmp'; fi ;;
             -demuxers)
-                echo ' D. = Demuxing supported'
+                printf 'Formats:\\n D.. = Demuxing supported\\n .E. = Muxing supported\\n ..d = Is a device\\n ---\\n'
+                printf ' D d fbdev Linux framebuffer\\n D d lavfi Libavfilter virtual input device\\n D d video4linux2,v4l2 Video4Linux2 device grab\\n'
                 for format in rtsp rtp sdp mpegts h264 hevc mov,mp4,m4a,3gp,3g2,mj2 matroska,webm wav mp3 aac ogg flac aiff asf rm; do
                     if [[ $TEST_FAILURE != demuxers || $format != wav ]]; then echo " D  $format Mock demuxer"; fi
                 done
                 if [[ $TEST_FAILURE == extra-demuxer ]]; then echo ' D  hls Mock demuxer'; fi ;;
             -muxers)
-                echo ' .E = Muxing supported'
+                printf 'Formats:\\n D.. = Demuxing supported\\n .E. = Muxing supported\\n ..d = Is a device\\n ---\\n'
+                printf '  Ed fbdev Linux framebuffer\\n  Ed oss OSS playback\\n  Ed video4linux2,v4l2 Video4Linux2 output device\\n'
                 for format in mp4 mov ipod wav mp3 adts matroska webm ogg flac null; do
                     if [[ $TEST_FAILURE != muxers || $format != mp4 ]]; then echo "  E $format Mock muxer"; fi
                 done
@@ -150,5 +152,19 @@ for (const failure of ['protocols', 'extra-protocol', 'demuxers', 'extra-demuxer
         const result = runBuild(failure, true);
         assert.notEqual(result.status, 0);
         assert.doesNotMatch(result.log, /make |configure /);
+    });
+}
+
+for (const [failure, message] of [
+    ['demuxers', 'Missing demuxers component: wav'],
+    ['extra-demuxer', 'Unexpected demuxers component: hls'],
+    ['muxers', 'Missing muxers component: mp4'],
+    ['extra-muxer', 'Unexpected muxers component: rtsp'],
+]) {
+    test(`format verification reports ${failure} despite device rows`, () => {
+        const result = runBuild(failure);
+        assert.notEqual(result.status, 0);
+        assert.equal(result.ready, false);
+        assert.ok(result.stderr.includes(`Error: ${message}`), result.stderr);
     });
 }

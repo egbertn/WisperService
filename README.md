@@ -197,6 +197,8 @@ FFmpeg build**, unlike the former restricted audio-only service build.
 Distribution of linked binaries must comply with the applicable licenses.
 The builder verifies library/pkg-config prefixes, decoders, encoders and the
 protocol/demuxer/muxer allowlists before publishing or reusing an installation.
+Format verification excludes device entries (the `d` flag) from FFmpeg's
+demuxer/muxer listings; these are not file formats in the profile's allowlists.
 The profile has a new immutable prefix; the previous unprofiled installation
 is retained. Rebuild both applications against the new prefix with fresh CMake
 build directories; existing installations are not automatically relinked.
