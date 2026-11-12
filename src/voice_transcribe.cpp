@@ -27,7 +27,7 @@ volatile std::sig_atomic_t interrupted = 0;
 void handle_signal(int) { interrupted = 1; }
 
 struct Config {
-    std::string host = "0.0.0.0";
+    std::string host = "127.0.0.1";
     int port = 8007;
     std::string model = "small";
     std::string model_file;
